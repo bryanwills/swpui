@@ -8,6 +8,7 @@ pub enum MatchMode {
 }
 
 impl MatchMode {
+    #[must_use]
     pub fn toggle(self) -> Self {
         match self {
             Self::Literal => Self::Regex,
@@ -40,6 +41,7 @@ pub struct FileMatches {
 }
 
 impl FileMatches {
+    #[must_use]
     pub fn active_match_count(&self) -> usize {
         self.matches.iter().filter(|m| !m.skip).count()
     }
@@ -67,6 +69,7 @@ pub enum Pane {
 }
 
 impl Pane {
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::SearchInput => Self::ReplaceInput,
@@ -76,6 +79,7 @@ impl Pane {
         }
     }
 
+    #[must_use]
     pub fn prev(self) -> Self {
         match self {
             Self::SearchInput => Self::Preview,
@@ -85,13 +89,13 @@ impl Pane {
         }
     }
 
+    #[must_use]
     pub fn is_input(self) -> bool {
         matches!(self, Self::SearchInput | Self::ReplaceInput)
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

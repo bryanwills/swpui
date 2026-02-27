@@ -1,4 +1,5 @@
 pub mod app;
+pub mod input;
 pub mod types;
 
 fn main() -> anyhow::Result<()> {
