@@ -1,4 +1,5 @@
 pub mod app;
+pub mod types;
 
 fn main() -> anyhow::Result<()> {
     ratatui::run(|term| app::App::default().run(term))?;
