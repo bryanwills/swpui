@@ -22,7 +22,13 @@ unwrap_used = "deny"
 
 [dependencies]
 anyhow = "1.0.102"
+ignore = "0.4.23"
+memchr = "2.7.4"
 ratatui = "0.30.0"
+regex = "1.11.1"
+
+[dev-dependencies]
+tempfile = "3.19.1"
 
 [profile.release]
 lto = "thin"
