@@ -1,5 +1,8 @@
-use crate::types::{ContextLine, FileMatches, MatchInfo, MatchMode};
-use std::path::Path;
+use crate::types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 const CONTEXT_LINES: usize = 3;
 
@@ -100,6 +103,90 @@ pub fn search_directory(dir: &Path, pattern: &str, mode: MatchMode) -> Vec<FileM
         }
     }
     results
+}
+
+pub struct SearchWorker {
+    root: PathBuf,
+    cmd_rx: Receiver<SearchRequest>,
+    result_tx: Sender<SearchResult>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl SearchWorker {
+    pub fn new(
+        root: PathBuf,
+        cmd_rx: Receiver<SearchRequest>,
+        result_tx: Sender<SearchResult>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            root,
+            cmd_rx,
+            result_tx,
+            cancelled,
+        }
+    }
+
+    pub fn run(self) {
+        while let Ok(request) = self.cmd_rx.recv() {
+            self.cancelled.store(false, Ordering::Relaxed);
+            self.execute_search(&request);
+        }
+    }
+
+    fn execute_search(&self, request: &SearchRequest) {
+        // Validate regex upfront before walking files
+        if request.mode == MatchMode::Regex {
+            if let Err(e) = regex::Regex::new(&request.pattern) {
+                let _ = self
+                    .result_tx
+                    .send(SearchResult::Error(request.generation, e.to_string()));
+                return;
+            }
+        }
+
+        let walker = ignore::WalkBuilder::new(&self.root).build();
+        for entry in walker.flatten() {
+            if self.cancelled.load(Ordering::Relaxed) {
+                self.drain_stale_requests();
+                return;
+            }
+
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
+            }
+
+            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+
+            let Ok(matches) = find_matches_in_content(&content, &request.pattern, request.mode)
+            else {
+                continue;
+            };
+
+            if !matches.is_empty() {
+                let file_matches = FileMatches {
+                    path: entry.path().to_path_buf(),
+                    matches,
+                };
+                if self
+                    .result_tx
+                    .send(SearchResult::FileMatches(request.generation, file_matches))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+        let _ = self
+            .result_tx
+            .send(SearchResult::Complete(request.generation));
+    }
+
+    fn drain_stale_requests(&self) {
+        while self.cmd_rx.try_recv().is_ok() {}
+    }
 }
 
 #[cfg(test)]
@@ -219,5 +306,104 @@ mod tests {
         let results = search_directory(dir.path(), "hello", MatchMode::Literal);
         assert_eq!(results.len(), 1);
         assert!(results[0].path.ends_with("included.txt"));
+    }
+
+    #[test]
+    fn search_worker_sends_results() {
+        let dir = create_test_dir(&[("test.txt", "foo bar foo\n")]);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = SearchWorker::new(dir.path().to_path_buf(), cmd_rx, result_tx, cancelled);
+        let handle = std::thread::spawn(move || worker.run());
+
+        cmd_tx
+            .send(SearchRequest {
+                pattern: "foo".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            })
+            .unwrap();
+
+        let mut got_file = false;
+        let mut got_complete = false;
+        loop {
+            match result_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+            {
+                SearchResult::FileMatches(generation, fm) => {
+                    assert_eq!(generation, 1);
+                    assert_eq!(fm.matches.len(), 2);
+                    got_file = true;
+                }
+                SearchResult::Complete(generation) => {
+                    assert_eq!(generation, 1);
+                    got_complete = true;
+                    break;
+                }
+                SearchResult::Error(_, _) => panic!("unexpected error"),
+            }
+        }
+        assert!(got_file);
+        assert!(got_complete);
+
+        drop(cmd_tx);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn search_worker_cancellation() {
+        let dir = create_test_dir(&[
+            ("a.txt", "needle\n"),
+            ("b.txt", "needle\n"),
+            ("c.txt", "needle\n"),
+        ]);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = SearchWorker::new(
+            dir.path().to_path_buf(),
+            cmd_rx,
+            result_tx,
+            cancelled.clone(),
+        );
+        let handle = std::thread::spawn(move || worker.run());
+
+        // Send first request then immediately cancel and send second
+        cmd_tx
+            .send(SearchRequest {
+                pattern: "needle".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            })
+            .unwrap();
+
+        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        cmd_tx
+            .send(SearchRequest {
+                pattern: "needle".to_string(),
+                mode: MatchMode::Literal,
+                generation: 2,
+            })
+            .unwrap();
+
+        // Drain results — we should eventually get Complete(2)
+        let mut got_gen2_complete = false;
+        loop {
+            match result_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(SearchResult::Complete(2)) => {
+                    got_gen2_complete = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(got_gen2_complete);
+
+        drop(cmd_tx);
+        handle.join().unwrap();
     }
 }
