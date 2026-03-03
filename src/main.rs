@@ -3,8 +3,10 @@ pub mod input;
 pub mod replace;
 pub mod search;
 pub mod types;
+pub mod ui;
 
 fn main() -> anyhow::Result<()> {
-    ratatui::run(|term| app::App::default().run(term))?;
+    let root = std::env::current_dir()?;
+    ratatui::run(|term| app::App::new(root).run(term))?;
     Ok(())
 }
