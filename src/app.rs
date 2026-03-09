@@ -352,6 +352,9 @@ impl App {
     }
 
     fn apply_to_file(&self, fm: &FileMatches, replacement: &str) -> anyhow::Result<()> {
+        if replace::is_file_stale(&fm.path, fm.content_hash)? {
+            anyhow::bail!("file modified externally, skipping");
+        }
         let content = std::fs::read_to_string(&fm.path)?;
         let new_content = replace::apply_replacements(&content, &fm.matches, replacement);
         replace::write_file_atomically(&fm.path, &new_content)?;

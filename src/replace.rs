@@ -1,4 +1,6 @@
 use crate::types::MatchInfo;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::path::Path;
 
@@ -31,6 +33,18 @@ pub fn write_file_atomically(path: &Path, content: &str) -> anyhow::Result<()> {
     tmp.write_all(content.as_bytes())?;
     tmp.persist(path)?;
     Ok(())
+}
+
+#[must_use]
+pub fn compute_content_hash(content: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn is_file_stale(path: &Path, original_hash: u64) -> anyhow::Result<bool> {
+    let current_content = std::fs::read_to_string(path)?;
+    Ok(compute_content_hash(&current_content) != original_hash)
 }
 
 #[cfg(test)]
@@ -124,5 +138,28 @@ mod tests {
         let result = write_file_atomically(&path, "replaced");
         assert!(result.is_ok());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "replaced");
+    }
+
+    #[test]
+    fn stale_file_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "original content").unwrap();
+        let hash = compute_content_hash("original content");
+
+        // Modify the file externally
+        std::fs::write(&path, "modified content").unwrap();
+
+        assert!(is_file_stale(&path, hash).unwrap());
+    }
+
+    #[test]
+    fn fresh_file_not_stale() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "original content").unwrap();
+        let hash = compute_content_hash("original content");
+
+        assert!(!is_file_stale(&path, hash).unwrap());
     }
 }

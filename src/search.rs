@@ -99,6 +99,7 @@ pub fn search_directory(dir: &Path, pattern: &str, mode: MatchMode) -> Vec<FileM
             results.push(FileMatches {
                 path: entry.path().to_path_buf(),
                 matches,
+                content_hash: crate::replace::compute_content_hash(&content),
             });
         }
     }
@@ -169,6 +170,7 @@ impl SearchWorker {
                 let file_matches = FileMatches {
                     path: entry.path().to_path_buf(),
                     matches,
+                    content_hash: crate::replace::compute_content_hash(&content),
                 };
                 if self
                     .result_tx
