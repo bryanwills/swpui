@@ -1,7 +1,7 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -12,8 +12,8 @@ use crate::replace;
 use crate::search::SearchWorker;
 use crate::types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult};
 
-const DEBOUNCE_MS: u64 = 100;
-const POLL_TIMEOUT_MS: u64 = 16;
+const DEBOUNCE: Duration = Duration::from_millis(100);
+const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 
 pub struct App {
     pub search_input: TextInput,
@@ -77,7 +77,7 @@ impl App {
     }
 
     fn poll_events(&mut self) -> anyhow::Result<()> {
-        if event::poll(Duration::from_millis(POLL_TIMEOUT_MS))?
+        if event::poll(POLL_TIMEOUT)?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
@@ -113,7 +113,7 @@ impl App {
             return;
         }
         if let Some(last) = self.last_keystroke
-            && last.elapsed() >= Duration::from_millis(DEBOUNCE_MS)
+            && last.elapsed() >= DEBOUNCE
         {
             self.dispatch_search();
             self.pending_search = false;
@@ -227,9 +227,7 @@ impl App {
                 self.selected_file = self.selected_file.saturating_sub(1);
                 self.selected_match = 0;
             }
-            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right
-                if !self.results.is_empty() =>
-            {
+            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right if !self.results.is_empty() => {
                 self.focused_pane = Pane::Preview;
             }
             KeyCode::Char('a') => self.apply_all(),
@@ -298,10 +296,7 @@ impl App {
             return;
         };
         if replace::has_overlapping_matches(&fm.matches) {
-            self.status_message = Some(format!(
-                "Overlapping matches in {}",
-                fm.path.display()
-            ));
+            self.status_message = Some(format!("Overlapping matches in {}", fm.path.display()));
             return;
         }
         match Self::apply_to_file(fm, &replacement) {
