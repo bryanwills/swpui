@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::path::Path;
 
+#[must_use]
 pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &str) -> String {
     let mut active: Vec<&MatchInfo> = matches.iter().filter(|m| !m.skip).collect();
     if active.is_empty() {
@@ -11,7 +12,7 @@ pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &st
     }
 
     // Sort by byte offset descending so we can replace from the end
-    active.sort_by(|a, b| b.byte_offset_start.cmp(&a.byte_offset_start));
+    active.sort_by_key(|m| std::cmp::Reverse(m.byte_offset_start));
 
     let mut result = content.to_string();
     for m in active {
@@ -20,6 +21,7 @@ pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &st
     result
 }
 
+#[must_use]
 pub fn has_overlapping_matches(matches: &[MatchInfo]) -> bool {
     let mut active: Vec<&MatchInfo> = matches.iter().filter(|m| !m.skip).collect();
     active.sort_by_key(|m| m.byte_offset_start);

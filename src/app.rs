@@ -34,6 +34,7 @@ pub struct App {
 }
 
 impl App {
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
@@ -76,12 +77,11 @@ impl App {
     }
 
     fn poll_events(&mut self) -> anyhow::Result<()> {
-        if event::poll(Duration::from_millis(POLL_TIMEOUT_MS))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    self.handle_key(key);
-                }
-            }
+        if event::poll(Duration::from_millis(POLL_TIMEOUT_MS))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            self.handle_key(key);
         }
         Ok(())
     }
@@ -112,11 +112,11 @@ impl App {
         if !self.pending_search {
             return;
         }
-        if let Some(last) = self.last_keystroke {
-            if last.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
-                self.dispatch_search();
-                self.pending_search = false;
-            }
+        if let Some(last) = self.last_keystroke
+            && last.elapsed() >= Duration::from_millis(DEBOUNCE_MS)
+        {
+            self.dispatch_search();
+            self.pending_search = false;
         }
     }
 
@@ -219,20 +219,18 @@ impl App {
     fn handle_file_list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.exit = true,
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.results.is_empty() {
-                    self.selected_file = (self.selected_file + 1).min(self.results.len() - 1);
-                    self.selected_match = 0;
-                }
+            KeyCode::Char('j') | KeyCode::Down if !self.results.is_empty() => {
+                self.selected_file = (self.selected_file + 1).min(self.results.len() - 1);
+                self.selected_match = 0;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_file = self.selected_file.saturating_sub(1);
                 self.selected_match = 0;
             }
-            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => {
-                if !self.results.is_empty() {
-                    self.focused_pane = Pane::Preview;
-                }
+            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right
+                if !self.results.is_empty() =>
+            {
+                self.focused_pane = Pane::Preview;
             }
             KeyCode::Char('a') => self.apply_all(),
             KeyCode::Char('f') => self.apply_file(),
@@ -244,21 +242,20 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(fm) = self.results.get(self.selected_file) {
-                    if !fm.matches.is_empty() {
-                        self.selected_match =
-                            (self.selected_match + 1).min(fm.matches.len() - 1);
-                    }
+                if let Some(fm) = self.results.get(self.selected_file)
+                    && !fm.matches.is_empty()
+                {
+                    self.selected_match = (self.selected_match + 1).min(fm.matches.len() - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_match = self.selected_match.saturating_sub(1);
             }
             KeyCode::Char(' ') => {
-                if let Some(fm) = self.results.get_mut(self.selected_file) {
-                    if let Some(m) = fm.matches.get_mut(self.selected_match) {
-                        m.skip = !m.skip;
-                    }
+                if let Some(fm) = self.results.get_mut(self.selected_file)
+                    && let Some(m) = fm.matches.get_mut(self.selected_match)
+                {
+                    m.skip = !m.skip;
                 }
             }
             KeyCode::Enter => self.apply_single_match(),
@@ -282,7 +279,7 @@ impl App {
                 ));
                 continue;
             }
-            match self.apply_to_file(fm, &replacement) {
+            match Self::apply_to_file(fm, &replacement) {
                 Ok(()) => indices_to_remove.push(i),
                 Err(e) => {
                     self.status_message = Some(format!("{}: {e}", fm.path.display()));
@@ -307,7 +304,7 @@ impl App {
             ));
             return;
         }
-        match self.apply_to_file(fm, &replacement) {
+        match Self::apply_to_file(fm, &replacement) {
             Ok(()) => {
                 self.results.remove(self.selected_file);
                 self.clamp_selection();
@@ -351,7 +348,7 @@ impl App {
         self.clamp_selection();
     }
 
-    fn apply_to_file(&self, fm: &FileMatches, replacement: &str) -> anyhow::Result<()> {
+    fn apply_to_file(fm: &FileMatches, replacement: &str) -> anyhow::Result<()> {
         if replace::is_file_stale(&fm.path, fm.content_hash)? {
             anyhow::bail!("file modified externally, skipping");
         }

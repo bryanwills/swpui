@@ -6,10 +6,12 @@ pub struct TextInput {
 }
 
 impl TextInput {
+    #[must_use]
     pub fn value(&self) -> &str {
         &self.content
     }
 
+    #[must_use]
     pub fn cursor(&self) -> usize {
         self.cursor
     }

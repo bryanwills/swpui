@@ -82,6 +82,7 @@ pub fn find_matches_in_content(
     Ok(matches)
 }
 
+#[must_use]
 pub fn search_directory(dir: &Path, pattern: &str, mode: MatchMode) -> Vec<FileMatches> {
     let walker = ignore::WalkBuilder::new(dir).build();
     let mut results = vec![];
@@ -137,13 +138,13 @@ impl SearchWorker {
 
     fn execute_search(&self, request: &SearchRequest) {
         // Validate regex upfront before walking files
-        if request.mode == MatchMode::Regex {
-            if let Err(e) = regex::Regex::new(&request.pattern) {
-                let _ = self
-                    .result_tx
-                    .send(SearchResult::Error(request.generation, e.to_string()));
-                return;
-            }
+        if request.mode == MatchMode::Regex
+            && let Err(e) = regex::Regex::new(&request.pattern)
+        {
+            let _ = self
+                .result_tx
+                .send(SearchResult::Error(request.generation, e.to_string()));
+            return;
         }
 
         let walker = ignore::WalkBuilder::new(&self.root).build();
@@ -328,7 +329,6 @@ mod tests {
             .unwrap();
 
         let mut got_file = false;
-        let mut got_complete = false;
         loop {
             match result_rx
                 .recv_timeout(std::time::Duration::from_secs(2))
@@ -341,14 +341,12 @@ mod tests {
                 }
                 SearchResult::Complete(generation) => {
                     assert_eq!(generation, 1);
-                    got_complete = true;
                     break;
                 }
                 SearchResult::Error(_, _) => panic!("unexpected error"),
             }
         }
         assert!(got_file);
-        assert!(got_complete);
 
         drop(cmd_tx);
         handle.join().unwrap();

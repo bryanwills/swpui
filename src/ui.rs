@@ -66,7 +66,7 @@ fn render_input_area(app: &App, frame: &mut Frame, area: Rect) {
     );
     if app.focused_pane == Pane::SearchInput {
         frame.set_cursor_position((
-            search_inner.x + app.search_input.cursor() as u16,
+            search_inner.x + u16::try_from(app.search_input.cursor()).unwrap_or(u16::MAX),
             search_inner.y,
         ));
     }
@@ -84,7 +84,7 @@ fn render_input_area(app: &App, frame: &mut Frame, area: Rect) {
     );
     if app.focused_pane == Pane::ReplaceInput {
         frame.set_cursor_position((
-            replace_inner.x + app.replace_input.cursor() as u16,
+            replace_inner.x + u16::try_from(app.replace_input.cursor()).unwrap_or(u16::MAX),
             replace_inner.y,
         ));
     }
