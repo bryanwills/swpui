@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use rat_widget::text_input::{self, TextInputState};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::input::TextInput;
 use crate::replace;
 use crate::search::SearchWorker;
 use crate::types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult};
@@ -16,8 +16,8 @@ const DEBOUNCE: Duration = Duration::from_millis(100);
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 
 pub struct App {
-    pub search_input: TextInput,
-    pub replace_input: TextInput,
+    pub search_input: TextInputState,
+    pub replace_input: TextInputState,
     pub match_mode: MatchMode,
     pub results: Vec<FileMatches>,
     pub focused_pane: Pane,
@@ -44,8 +44,8 @@ impl App {
         std::thread::spawn(move || worker.run());
 
         Self {
-            search_input: TextInput::default(),
-            replace_input: TextInput::default(),
+            search_input: TextInputState::new(),
+            replace_input: TextInputState::new(),
             match_mode: MatchMode::default(),
             results: vec![],
             focused_pane: Pane::SearchInput,
@@ -72,7 +72,7 @@ impl App {
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         crate::ui::render(self, frame);
     }
 
@@ -126,7 +126,7 @@ impl App {
     }
 
     fn dispatch_search(&mut self) {
-        let pattern = self.search_input.value().to_string();
+        let pattern = self.search_input.text().to_string();
         if pattern.is_empty() {
             self.results.clear();
             self.status_message = None;
@@ -165,54 +165,31 @@ impl App {
         // Ctrl-r toggles match mode from anywhere
         if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.match_mode = self.match_mode.toggle();
-            if !self.search_input.value().is_empty() {
+            if !self.search_input.text().is_empty() {
                 self.dispatch_search();
             }
             return;
         }
 
+        // Esc in input panes moves focus to file list
+        if key.code == KeyCode::Esc && self.focused_pane.is_input() {
+            self.focused_pane = Pane::FileList;
+            return;
+        }
+
         match self.focused_pane {
-            Pane::SearchInput => self.handle_search_input_key(key),
-            Pane::ReplaceInput => self.handle_replace_input_key(key),
+            Pane::SearchInput => {
+                let outcome =
+                    text_input::handle_events(&mut self.search_input, true, &Event::Key(key));
+                if outcome == rat_widget::event::TextOutcome::TextChanged {
+                    self.schedule_search();
+                }
+            }
+            Pane::ReplaceInput => {
+                text_input::handle_events(&mut self.replace_input, true, &Event::Key(key));
+            }
             Pane::FileList => self.handle_file_list_key(key),
             Pane::Preview => self.handle_preview_key(key),
-        }
-    }
-
-    fn handle_search_input_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char(c) => {
-                self.search_input.insert(c);
-                self.schedule_search();
-            }
-            KeyCode::Backspace => {
-                self.search_input.backspace();
-                self.schedule_search();
-            }
-            KeyCode::Delete => {
-                self.search_input.delete();
-                self.schedule_search();
-            }
-            KeyCode::Left => self.search_input.move_left(),
-            KeyCode::Right => self.search_input.move_right(),
-            KeyCode::Home => self.search_input.move_home(),
-            KeyCode::End => self.search_input.move_end(),
-            KeyCode::Esc => self.focused_pane = Pane::FileList,
-            _ => {}
-        }
-    }
-
-    fn handle_replace_input_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char(c) => self.replace_input.insert(c),
-            KeyCode::Backspace => self.replace_input.backspace(),
-            KeyCode::Delete => self.replace_input.delete(),
-            KeyCode::Left => self.replace_input.move_left(),
-            KeyCode::Right => self.replace_input.move_right(),
-            KeyCode::Home => self.replace_input.move_home(),
-            KeyCode::End => self.replace_input.move_end(),
-            KeyCode::Esc => self.focused_pane = Pane::FileList,
-            _ => {}
         }
     }
 
@@ -267,7 +244,7 @@ impl App {
     }
 
     fn apply_all(&mut self) {
-        let replacement = self.replace_input.value().to_string();
+        let replacement = self.replace_input.text().to_string();
         let mut indices_to_remove = vec![];
         for (i, fm) in self.results.iter().enumerate() {
             if replace::has_overlapping_matches(&fm.matches) {
@@ -291,7 +268,7 @@ impl App {
     }
 
     fn apply_file(&mut self) {
-        let replacement = self.replace_input.value().to_string();
+        let replacement = self.replace_input.text().to_string();
         let Some(fm) = self.results.get(self.selected_file) else {
             return;
         };
@@ -311,7 +288,7 @@ impl App {
     }
 
     fn apply_single_match(&mut self) {
-        let replacement = self.replace_input.value().to_string();
+        let replacement = self.replace_input.text().to_string();
         let Some(fm) = self.results.get(self.selected_file) else {
             return;
         };

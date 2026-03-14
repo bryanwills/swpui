@@ -1,14 +1,16 @@
+use rat_widget::text::HasScreenCursor as _;
+use rat_widget::text_input::TextInput;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize as _};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, List, ListItem, Paragraph, StatefulWidget as _, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
 use crate::types::{MatchMode, Pane};
 
-pub fn render(app: &App, frame: &mut Frame) {
+pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
     // Main layout: content area + status bar
@@ -21,7 +23,7 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     // Left column: input area + file list
     let [input_area, file_area] =
-        Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]).areas(left);
+        Layout::vertical([Constraint::Length(6), Constraint::Fill(1)]).areas(left);
 
     render_input_area(app, frame, input_area);
     render_file_list(app, frame, file_area);
@@ -37,9 +39,9 @@ fn focused_border_style(pane: Pane, current: Pane) -> Style {
     }
 }
 
-fn render_input_area(app: &App, frame: &mut Frame, area: Rect) {
+fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
     let [search_area, replace_area] =
-        Layout::vertical([Constraint::Length(2), Constraint::Length(2)]).areas(area);
+        Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(area);
 
     let mode_label = match app.match_mode {
         MatchMode::Literal => "Search (literal)".to_string(),
@@ -54,39 +56,43 @@ fn render_input_area(app: &App, frame: &mut Frame, area: Rect) {
         };
 
     // Search input
+    let search_focused = app.focused_pane == Pane::SearchInput;
+    if search_focused {
+        app.search_input.focus.set(true);
+    } else {
+        app.search_input.focus.set(false);
+    }
     let search_block = Block::bordered()
         .border_set(border::ROUNDED)
         .border_style(search_border_style)
         .title(mode_label);
-    let search_inner = search_block.inner(search_area);
-    frame.render_widget(search_block, search_area);
-    frame.render_widget(
-        Paragraph::new(app.search_input.value()),
-        search_inner,
-    );
-    if app.focused_pane == Pane::SearchInput {
-        frame.set_cursor_position((
-            search_inner.x + u16::try_from(app.search_input.cursor()).unwrap_or(u16::MAX),
-            search_inner.y,
-        ));
+    TextInput::new()
+        .style(Style::default())
+        .focus_style(Style::default())
+        .block(search_block)
+        .render(search_area, frame.buffer_mut(), &mut app.search_input);
+    if let Some((cx, cy)) = app.search_input.screen_cursor() {
+        frame.set_cursor_position((cx, cy));
     }
 
     // Replace input
+    let replace_focused = app.focused_pane == Pane::ReplaceInput;
+    if replace_focused {
+        app.replace_input.focus.set(true);
+    } else {
+        app.replace_input.focus.set(false);
+    }
     let replace_block = Block::bordered()
         .border_set(border::ROUNDED)
         .border_style(focused_border_style(Pane::ReplaceInput, app.focused_pane))
         .title("Replace");
-    let replace_inner = replace_block.inner(replace_area);
-    frame.render_widget(replace_block, replace_area);
-    frame.render_widget(
-        Paragraph::new(app.replace_input.value()),
-        replace_inner,
-    );
-    if app.focused_pane == Pane::ReplaceInput {
-        frame.set_cursor_position((
-            replace_inner.x + u16::try_from(app.replace_input.cursor()).unwrap_or(u16::MAX),
-            replace_inner.y,
-        ));
+    TextInput::new()
+        .style(Style::default())
+        .focus_style(Style::default())
+        .block(replace_block)
+        .render(replace_area, frame.buffer_mut(), &mut app.replace_input);
+    if let Some((cx, cy)) = app.replace_input.screen_cursor() {
+        frame.set_cursor_position((cx, cy));
     }
 }
 
@@ -148,7 +154,7 @@ fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
         return;
     };
 
-    let replacement = app.replace_input.value();
+    let replacement = app.replace_input.text();
     let mut lines: Vec<Line> = vec![];
 
     for (match_idx, m) in fm.matches.iter().enumerate() {
