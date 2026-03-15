@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use rat_widget::list::List;
 use rat_widget::scrolled::{Scroll, ScrollArea, ScrollAreaState};
 use rat_widget::text::HasScreenCursor as _;
 use rat_widget::text_input::TextInput;
@@ -8,7 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize as _};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, Paragraph, StatefulWidget as _};
+use ratatui::widgets::{Block, ListItem, Paragraph, StatefulWidget as _};
 
 use crate::app::App;
 use crate::types::{FileMatches, MatchMode, Pane};
@@ -102,16 +103,17 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 }
 
-fn render_file_list(app: &App, frame: &mut Frame, area: Rect) {
+fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
     let title = format!("Files ({} matched)", app.results.len());
+    let border_style = focused_border_style(Pane::FileList, app.focused_pane);
     let block = Block::bordered()
         .border_set(border::ROUNDED)
-        .border_style(focused_border_style(Pane::FileList, app.focused_pane))
+        .border_style(border_style)
         .title(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
     if app.results.is_empty() {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
         frame.render_widget(
             Paragraph::new("No matches").style(Style::default().fg(Color::DarkGray)),
             inner,
@@ -119,6 +121,7 @@ fn render_file_list(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
+    let selected = app.file_list.selected();
     let items: Vec<ListItem> = app
         .results
         .iter()
@@ -128,21 +131,31 @@ fn render_file_list(app: &App, frame: &mut Frame, area: Rect) {
             let total = fm.matches.len();
             let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
             let label = format!("{} ({}/{})", rel.display(), active, total);
-            let style = if i == app.selected_file {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if active == 0 {
-                Style::default().fg(Color::DarkGray)
+            if Some(i) != selected && active == 0 {
+                ListItem::new(Line::styled(label, Style::default().fg(Color::DarkGray)))
             } else {
-                Style::default()
-            };
-            ListItem::new(label).style(style)
+                ListItem::new(label)
+            }
         })
         .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    // Set up scroll state so scroll_to_selected works before render
+    let inner_height = block.inner(area).height as usize;
+    app.file_list.scroll.set_page_len(inner_height);
+    app.file_list
+        .scroll
+        .set_max_offset(items.len().saturating_sub(inner_height));
+    app.file_list.scroll_to_selected();
+
+    let select_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    List::new(items)
+        .block(block)
+        .scroll(Scroll::vertical().style(border_style))
+        .select_style(select_style)
+        .focus_style(select_style)
+        .render(area, frame.buffer_mut(), &mut app.file_list);
 }
 
 fn build_preview_lines<'a>(
@@ -246,7 +259,7 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
         .border_style(border_style)
         .title("Preview");
 
-    let Some(fm) = app.results.get(app.selected_file) else {
+    let Some(fm) = app.results.get(app.selected_file()) else {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         frame.render_widget(

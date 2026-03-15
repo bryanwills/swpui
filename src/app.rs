@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use rat_widget::list::ListState;
 use rat_widget::scrolled::ScrollState;
 use rat_widget::text_input::{self, TextInputState};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -23,7 +24,7 @@ pub struct App {
     pub match_mode: MatchMode,
     pub results: Vec<FileMatches>,
     pub focused_pane: Pane,
-    pub selected_file: usize,
+    pub file_list: ListState,
     pub selected_match: usize,
     pub preview_scroll: ScrollState,
     pub status_message: Option<String>,
@@ -53,7 +54,7 @@ impl App {
             match_mode: MatchMode::default(),
             results: vec![],
             focused_pane: Pane::SearchInput,
-            selected_file: 0,
+            file_list: ListState::default(),
             selected_match: 0,
             preview_scroll: ScrollState::new(),
             status_message: None,
@@ -65,6 +66,10 @@ impl App {
             result_rx,
             cancelled,
         }
+    }
+
+    pub fn selected_file(&self) -> usize {
+        self.file_list.selected().unwrap_or(0)
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -141,7 +146,7 @@ impl App {
         self.cancelled.store(true, Ordering::Relaxed);
         self.results.clear();
         self.status_message = None;
-        self.selected_file = 0;
+        self.file_list.select(Some(0));
         self.selected_match = 0;
         self.preview_scroll.clear();
         let _ = self.cmd_tx.send(SearchRequest {
@@ -203,12 +208,14 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') | KeyCode::Down if !self.results.is_empty() => {
-                self.selected_file = (self.selected_file + 1).min(self.results.len() - 1);
+                let next = (self.selected_file() + 1).min(self.results.len() - 1);
+                self.file_list.select(Some(next));
                 self.selected_match = 0;
                 self.preview_scroll.clear();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_file = self.selected_file.saturating_sub(1);
+                let prev = self.selected_file().saturating_sub(1);
+                self.file_list.select(Some(prev));
                 self.selected_match = 0;
                 self.preview_scroll.clear();
             }
@@ -223,10 +230,11 @@ impl App {
     }
 
     fn handle_preview_key(&mut self, key: KeyEvent) {
+        let sel = self.selected_file();
         match key.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(fm) = self.results.get(self.selected_file)
+                if let Some(fm) = self.results.get(sel)
                     && !fm.matches.is_empty()
                 {
                     self.selected_match = (self.selected_match + 1).min(fm.matches.len() - 1);
@@ -236,7 +244,7 @@ impl App {
                 self.selected_match = self.selected_match.saturating_sub(1);
             }
             KeyCode::Char(' ') => {
-                if let Some(fm) = self.results.get_mut(self.selected_file)
+                if let Some(fm) = self.results.get_mut(sel)
                     && let Some(m) = fm.matches.get_mut(self.selected_match)
                 {
                     m.skip = !m.skip;
@@ -254,7 +262,8 @@ impl App {
     }
 
     fn toggle_skip_file(&mut self) {
-        let Some(fm) = self.results.get_mut(self.selected_file) else {
+        let sel = self.selected_file();
+        let Some(fm) = self.results.get_mut(sel) else {
             return;
         };
         let all_skipped = fm.matches.iter().all(|m| m.skip);
@@ -288,8 +297,9 @@ impl App {
     }
 
     fn apply_file(&mut self) {
+        let sel = self.selected_file();
         let replacement = self.replace_input.text().to_string();
-        let Some(fm) = self.results.get(self.selected_file) else {
+        let Some(fm) = self.results.get(sel) else {
             return;
         };
         if replace::has_overlapping_matches(&fm.matches) {
@@ -298,7 +308,7 @@ impl App {
         }
         match Self::apply_to_file(fm, &replacement) {
             Ok(()) => {
-                self.results.remove(self.selected_file);
+                self.results.remove(sel);
                 self.clamp_selection();
             }
             Err(e) => {
@@ -308,8 +318,9 @@ impl App {
     }
 
     fn apply_single_match(&mut self) {
+        let sel = self.selected_file();
         let replacement = self.replace_input.text().to_string();
-        let Some(fm) = self.results.get(self.selected_file) else {
+        let Some(fm) = self.results.get(sel) else {
             return;
         };
         let Some(m) = fm.matches.get(self.selected_match) else {
@@ -332,10 +343,10 @@ impl App {
             return;
         }
         // Remove this match from results; if no matches left, remove the file
-        let fm = &mut self.results[self.selected_file];
+        let fm = &mut self.results[sel];
         fm.matches.remove(self.selected_match);
         if fm.matches.is_empty() {
-            self.results.remove(self.selected_file);
+            self.results.remove(sel);
         }
         self.clamp_selection();
     }
@@ -352,13 +363,14 @@ impl App {
 
     fn clamp_selection(&mut self) {
         if self.results.is_empty() {
-            self.selected_file = 0;
+            self.file_list.select(Some(0));
             self.selected_match = 0;
             self.preview_scroll.clear();
             self.focused_pane = Pane::FileList;
         } else {
-            self.selected_file = self.selected_file.min(self.results.len() - 1);
-            let match_count = self.results[self.selected_file].matches.len();
+            let clamped = self.selected_file().min(self.results.len() - 1);
+            self.file_list.select(Some(clamped));
+            let match_count = self.results[clamped].matches.len();
             self.selected_match = self.selected_match.min(match_count.saturating_sub(1));
         }
     }
