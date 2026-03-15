@@ -50,7 +50,7 @@ pub fn is_file_stale(path: &Path, original_hash: u64) -> anyhow::Result<bool> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::types::MatchInfo;

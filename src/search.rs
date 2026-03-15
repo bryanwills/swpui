@@ -200,7 +200,7 @@ impl SearchWorker {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::io::Write as _;
@@ -404,7 +404,7 @@ mod tests {
                     got_gen2_complete = true;
                     break;
                 }
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) => break,
             }
         }

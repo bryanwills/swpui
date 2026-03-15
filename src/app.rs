@@ -1,18 +1,33 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::PathBuf,
+    slice,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
-use rat_widget::list::ListState;
-use rat_widget::scrolled::ScrollState;
-use rat_widget::text_input::{self, TextInputState};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::{DefaultTerminal, Frame};
+use rat_widget::{
+    event::TextOutcome,
+    list::ListState,
+    scrolled::ScrollState,
+    text_input::{self, TextInputState},
+};
+use ratatui::{
+    DefaultTerminal, Frame,
+    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+};
 
-use crate::replace;
-use crate::search::SearchWorker;
-use crate::types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult};
+use crate::{
+    replace,
+    search::SearchWorker,
+    types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult},
+    ui,
+};
 
 const DEBOUNCE: Duration = Duration::from_millis(100);
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
@@ -44,16 +59,16 @@ impl App {
         let (result_tx, result_rx) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        let worker = SearchWorker::new(root.clone(), cmd_rx, result_tx, cancelled.clone());
-        std::thread::spawn(move || worker.run());
+        let worker = SearchWorker::new(root.clone(), cmd_rx, result_tx, Arc::clone(&cancelled));
+        thread::spawn(move || worker.run());
 
         Self {
             root,
             search_input: TextInputState::new(),
             replace_input: TextInputState::new(),
             match_mode: MatchMode::default(),
-            results: vec![],
-            focused_pane: Pane::SearchInput,
+            results: Vec::new(),
+            focused_pane: Pane::default(),
             file_list: ListState::default(),
             selected_match: 0,
             preview_scroll: ScrollState::new(),
@@ -69,7 +84,7 @@ impl App {
     }
 
     pub fn selected_file(&self) -> usize {
-        self.file_list.selected().unwrap_or(0)
+        self.file_list.selected().unwrap_or_default()
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -83,7 +98,7 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        crate::ui::render(self, frame);
+        ui::render(self, frame);
     }
 
     fn poll_events(&mut self) -> anyhow::Result<()> {
@@ -99,21 +114,20 @@ impl App {
     fn poll_search_results(&mut self) {
         while let Ok(result) = self.result_rx.try_recv() {
             match result {
-                SearchResult::FileMatches(generation, file_matches) => {
-                    if generation == self.generation {
-                        self.results.push(file_matches);
-                    }
+                SearchResult::FileMatches(generation, file_matches)
+                    if generation == self.generation =>
+                {
+                    self.results.push(file_matches);
                 }
-                SearchResult::Complete(generation) => {
-                    if generation == self.generation {
-                        self.results.sort_by(|a, b| a.path.cmp(&b.path));
-                    }
+                SearchResult::Complete(generation) if generation == self.generation => {
+                    self.results.sort_by(|a, b| a.path.cmp(&b.path));
                 }
-                SearchResult::Error(generation, msg) => {
-                    if generation == self.generation {
-                        self.status_message = Some(msg);
-                    }
+                SearchResult::Error(generation, msg) if generation == self.generation => {
+                    self.status_message = Some(msg);
                 }
+                SearchResult::FileMatches(..)
+                | SearchResult::Complete(..)
+                | SearchResult::Error(..) => {} // ignore stale results
             }
         }
     }
@@ -136,63 +150,57 @@ impl App {
     }
 
     fn dispatch_search(&mut self) {
-        let pattern = self.search_input.text().to_string();
+        self.results.clear();
+        self.status_message = None;
+        let pattern = self.search_input.text();
         if pattern.is_empty() {
-            self.results.clear();
-            self.status_message = None;
             return;
         }
         self.generation += 1;
-        self.cancelled.store(true, Ordering::Relaxed);
-        self.results.clear();
-        self.status_message = None;
+        self.cancelled.store(true, Ordering::Relaxed); // cancel any ongoing search
         self.file_list.select(Some(0));
         self.selected_match = 0;
         self.preview_scroll.clear();
         let _ = self.cmd_tx.send(SearchRequest {
-            pattern,
+            pattern: pattern.to_string(),
             mode: self.match_mode,
             generation: self.generation,
         });
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        // Ctrl-c quits from anywhere
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.exit = true;
-            return;
-        }
-
-        // Tab / Shift-Tab cycle focus from anywhere
-        if key.code == KeyCode::BackTab {
-            self.focused_pane = self.focused_pane.prev();
-            return;
-        }
-        if key.code == KeyCode::Tab {
-            self.focused_pane = self.focused_pane.next();
-            return;
-        }
-
-        // Ctrl-r toggles match mode from anywhere
-        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.match_mode = self.match_mode.toggle();
-            if !self.search_input.text().is_empty() {
-                self.dispatch_search();
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.exit = true;
+                return;
             }
-            return;
-        }
-
-        // Esc in input panes moves focus to file list
-        if key.code == KeyCode::Esc && self.focused_pane.is_input() {
-            self.focused_pane = Pane::FileList;
-            return;
+            KeyCode::BackTab => {
+                self.focused_pane = self.focused_pane.prev();
+                return;
+            }
+            KeyCode::Tab => {
+                self.focused_pane = self.focused_pane.next();
+                return;
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.match_mode = self.match_mode.toggle();
+                if !self.search_input.text().is_empty() {
+                    self.dispatch_search();
+                }
+                return;
+            }
+            KeyCode::Esc if self.focused_pane.is_input() => {
+                self.focused_pane = Pane::FileList;
+                return;
+            }
+            _ => {}
         }
 
         match self.focused_pane {
             Pane::SearchInput => {
-                let outcome =
-                    text_input::handle_events(&mut self.search_input, true, &Event::Key(key));
-                if outcome == rat_widget::event::TextOutcome::TextChanged {
+                if text_input::handle_events(&mut self.search_input, true, &Event::Key(key))
+                    == TextOutcome::TextChanged
+                {
                     self.schedule_search();
                 }
             }
@@ -204,24 +212,9 @@ impl App {
         }
     }
 
-    fn handle_file_list_key(&mut self, key: KeyEvent) {
+    fn handle_non_input_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.exit = true,
-            KeyCode::Char('j') | KeyCode::Down if !self.results.is_empty() => {
-                let next = (self.selected_file() + 1).min(self.results.len() - 1);
-                self.file_list.select(Some(next));
-                self.selected_match = 0;
-                self.preview_scroll.clear();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let prev = self.selected_file().saturating_sub(1);
-                self.file_list.select(Some(prev));
-                self.selected_match = 0;
-                self.preview_scroll.clear();
-            }
-            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right if !self.results.is_empty() => {
-                self.focused_pane = Pane::Preview;
-            }
             KeyCode::Char('s') => self.toggle_skip_file(),
             KeyCode::Char('a') => self.apply_all(),
             KeyCode::Char('f') => self.apply_file(),
@@ -229,19 +222,45 @@ impl App {
         }
     }
 
+    fn handle_file_list_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down if !self.results.is_empty() => {
+                let next = (self.selected_file() + 1).min(self.results.len() - 1);
+                self.file_list.select(Some(next));
+                self.selected_match = 0;
+                self.preview_scroll.clear();
+                return;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let prev = self.selected_file().saturating_sub(1);
+                self.file_list.select(Some(prev));
+                self.selected_match = 0;
+                self.preview_scroll.clear();
+                return;
+            }
+            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right if !self.results.is_empty() => {
+                self.focused_pane = Pane::Preview;
+                return;
+            }
+            _ => {}
+        }
+        self.handle_non_input_key(key);
+    }
+
     fn handle_preview_key(&mut self, key: KeyEvent) {
         let sel = self.selected_file();
         match key.code {
-            KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(fm) = self.results.get(sel)
                     && !fm.matches.is_empty()
                 {
                     self.selected_match = (self.selected_match + 1).min(fm.matches.len() - 1);
                 }
+                return;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_match = self.selected_match.saturating_sub(1);
+                return;
             }
             KeyCode::Char(' ') => {
                 if let Some(fm) = self.results.get_mut(sel)
@@ -249,16 +268,19 @@ impl App {
                 {
                     m.skip = !m.skip;
                 }
+                return;
             }
-            KeyCode::Enter => self.apply_single_match(),
+            KeyCode::Enter => {
+                self.apply_single_match();
+                return;
+            }
             KeyCode::Char('h') | KeyCode::Esc | KeyCode::Left => {
                 self.focused_pane = Pane::FileList;
+                return;
             }
-            KeyCode::Char('s') => self.toggle_skip_file(),
-            KeyCode::Char('a') => self.apply_all(),
-            KeyCode::Char('f') => self.apply_file(),
             _ => {}
         }
+        self.handle_non_input_key(key);
     }
 
     fn toggle_skip_file(&mut self) {
@@ -274,7 +296,7 @@ impl App {
 
     fn apply_all(&mut self) {
         let replacement = self.replace_input.text().to_string();
-        let mut indices_to_remove = vec![];
+        let mut indices_to_remove = Vec::with_capacity(self.results.len());
         for (i, fm) in self.results.iter().enumerate() {
             if replace::has_overlapping_matches(&fm.matches) {
                 self.status_message = Some(format!(
@@ -283,15 +305,19 @@ impl App {
                 ));
                 continue;
             }
-            match Self::apply_to_file(fm, &replacement) {
-                Ok(()) => indices_to_remove.push(i),
-                Err(e) => {
-                    self.status_message = Some(format!("{}: {e}", fm.path.display()));
-                }
+            if let Err(e) = Self::apply_to_file(fm, &replacement) {
+                self.status_message = Some(format!("{}: {e}", fm.path.display()));
+            } else {
+                indices_to_remove.push(i);
             }
         }
-        for i in indices_to_remove.into_iter().rev() {
-            self.results.remove(i);
+        if indices_to_remove.len() == self.results.len() {
+            // happy path, all replacements worked
+            self.results.clear();
+        } else {
+            for i in indices_to_remove.into_iter().rev() {
+                self.results.swap_remove(i);
+            }
         }
         self.clamp_selection();
     }
@@ -306,21 +332,18 @@ impl App {
             self.status_message = Some(format!("Overlapping matches in {}", fm.path.display()));
             return;
         }
-        match Self::apply_to_file(fm, &replacement) {
-            Ok(()) => {
-                self.results.remove(sel);
-                self.clamp_selection();
-            }
-            Err(e) => {
-                self.status_message = Some(e.to_string());
-            }
+        if let Err(e) = Self::apply_to_file(fm, &replacement) {
+            self.status_message = Some(e.to_string());
+        } else {
+            self.results.remove(sel);
+            self.clamp_selection();
         }
     }
 
     fn apply_single_match(&mut self) {
         let sel = self.selected_file();
         let replacement = self.replace_input.text().to_string();
-        let Some(fm) = self.results.get(sel) else {
+        let Some(fm) = self.results.get_mut(sel) else {
             return;
         };
         let Some(m) = fm.matches.get(self.selected_match) else {
@@ -329,21 +352,20 @@ impl App {
         if m.skip {
             return;
         }
-        let content = match std::fs::read_to_string(&fm.path) {
+        let content = match fs::read_to_string(&fm.path) {
             Ok(c) => c,
             Err(e) => {
                 self.status_message = Some(format!("{}: {e}", fm.path.display()));
                 return;
             }
         };
-        let single = vec![m.clone()];
-        let new_content = replace::apply_replacements(&content, &single, &replacement);
+        let new_content = replace::apply_replacements(&content, slice::from_ref(m), &replacement);
         if let Err(e) = replace::write_file_atomically(&fm.path, &new_content) {
             self.status_message = Some(format!("{}: {e}", fm.path.display()));
             return;
         }
-        // Remove this match from results; if no matches left, remove the file
-        let fm = &mut self.results[sel];
+        // remove this match from the results
+        // if no matches left, remove the file
         fm.matches.remove(self.selected_match);
         if fm.matches.is_empty() {
             self.results.remove(sel);
@@ -355,7 +377,7 @@ impl App {
         if replace::is_file_stale(&fm.path, fm.content_hash)? {
             anyhow::bail!("file modified externally, skipping");
         }
-        let content = std::fs::read_to_string(&fm.path)?;
+        let content = fs::read_to_string(&fm.path)?;
         let new_content = replace::apply_replacements(&content, &fm.matches, replacement);
         replace::write_file_atomically(&fm.path, &new_content)?;
         Ok(())
