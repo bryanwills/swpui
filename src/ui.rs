@@ -181,32 +181,46 @@ fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
             )));
         }
 
-        // The match line itself
+        // The match line itself: show full line with the matched portion highlighted
+        let before_match = &m.line_content[..m.match_col_start];
+        let after_match = &m.line_content[m.match_col_end..];
+
         if m.skip {
-            lines.push(Line::from(Span::styled(
-                format!("  {} [skipped]", m.matched_text),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::CROSSED_OUT),
-            )));
-        } else if !replacement.is_empty() {
-            // Inline diff: old strikethrough, then new
             lines.push(Line::from(vec![
                 Span::raw("  "),
+                Span::styled(before_match, Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    &m.matched_text,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                ),
+                Span::styled(after_match, Style::default().fg(Color::DarkGray)),
+                Span::styled(" [skipped]", Style::default().fg(Color::DarkGray)),
+            ]));
+        } else if !replacement.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::raw(before_match),
                 Span::styled(
                     &m.matched_text,
                     Style::default()
                         .fg(Color::Red)
                         .add_modifier(Modifier::CROSSED_OUT),
                 ),
-                Span::styled(" -> ", Style::default().fg(Color::DarkGray)),
                 Span::styled(replacement, Style::default().fg(Color::Green)),
+                Span::raw(after_match),
             ]));
         } else {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", m.matched_text),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )));
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::raw(before_match),
+                Span::styled(
+                    &m.matched_text,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(after_match),
+            ]));
         }
 
         // Context after

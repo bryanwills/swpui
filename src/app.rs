@@ -153,12 +153,12 @@ impl App {
         }
 
         // Tab / Shift-Tab cycle focus from anywhere
+        if key.code == KeyCode::BackTab {
+            self.focused_pane = self.focused_pane.prev();
+            return;
+        }
         if key.code == KeyCode::Tab {
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                self.focused_pane = self.focused_pane.prev();
-            } else {
-                self.focused_pane = self.focused_pane.next();
-            }
+            self.focused_pane = self.focused_pane.next();
             return;
         }
 

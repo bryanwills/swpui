@@ -68,11 +68,19 @@ pub fn find_matches_in_content(
             })
             .collect();
 
+        let line_start_byte = line_byte_offsets[line_idx];
+        let line_str = lines.get(line_idx).copied().unwrap_or("");
+        let match_col_start = byte_start - line_start_byte;
+        let match_col_end = (byte_end - line_start_byte).min(line_str.len());
+
         matches.push(MatchInfo {
             byte_offset_start: byte_start,
             byte_offset_end: byte_end,
             line_number,
             matched_text: content[byte_start..byte_end].to_string(),
+            line_content: line_str.to_string(),
+            match_col_start,
+            match_col_end,
             context_before,
             context_after,
             skip: false,
