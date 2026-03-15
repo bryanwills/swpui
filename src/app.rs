@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use rat_widget::scrolled::ScrollState;
 use rat_widget::text_input::{self, TextInputState};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
@@ -24,7 +25,7 @@ pub struct App {
     pub focused_pane: Pane,
     pub selected_file: usize,
     pub selected_match: usize,
-    pub preview_scroll: u16,
+    pub preview_scroll: ScrollState,
     pub status_message: Option<String>,
     exit: bool,
     generation: u64,
@@ -54,7 +55,7 @@ impl App {
             focused_pane: Pane::SearchInput,
             selected_file: 0,
             selected_match: 0,
-            preview_scroll: 0,
+            preview_scroll: ScrollState::new(),
             status_message: None,
             exit: false,
             generation: 0,
@@ -142,7 +143,7 @@ impl App {
         self.status_message = None;
         self.selected_file = 0;
         self.selected_match = 0;
-        self.preview_scroll = 0;
+        self.preview_scroll.clear();
         let _ = self.cmd_tx.send(SearchRequest {
             pattern,
             mode: self.match_mode,
@@ -204,12 +205,12 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down if !self.results.is_empty() => {
                 self.selected_file = (self.selected_file + 1).min(self.results.len() - 1);
                 self.selected_match = 0;
-                self.preview_scroll = 0;
+                self.preview_scroll.clear();
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_file = self.selected_file.saturating_sub(1);
                 self.selected_match = 0;
-                self.preview_scroll = 0;
+                self.preview_scroll.clear();
             }
             KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right if !self.results.is_empty() => {
                 self.focused_pane = Pane::Preview;
@@ -353,7 +354,7 @@ impl App {
         if self.results.is_empty() {
             self.selected_file = 0;
             self.selected_match = 0;
-            self.preview_scroll = 0;
+            self.preview_scroll.clear();
             self.focused_pane = Pane::FileList;
         } else {
             self.selected_file = self.selected_file.min(self.results.len() - 1);

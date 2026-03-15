@@ -1,3 +1,6 @@
+use std::ops::Range;
+
+use rat_widget::scrolled::{Scroll, ScrollArea, ScrollAreaState};
 use rat_widget::text::HasScreenCursor as _;
 use rat_widget::text_input::TextInput;
 use ratatui::Frame;
@@ -8,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, Paragraph, StatefulWidget as _};
 
 use crate::app::App;
-use crate::types::{MatchMode, Pane};
+use crate::types::{FileMatches, MatchMode, Pane};
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
@@ -142,31 +145,18 @@ fn render_file_list(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(list, inner);
 }
 
-fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
-    let block = Block::bordered()
-        .border_set(border::ROUNDED)
-        .border_style(focused_border_style(Pane::Preview, app.focused_pane))
-        .title("Preview");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let Some(fm) = app.results.get(app.selected_file) else {
-        frame.render_widget(
-            Paragraph::new("Select a file").style(Style::default().fg(Color::DarkGray)),
-            inner,
-        );
-        return;
-    };
-
-    let replacement = app.replace_input.text();
+fn build_preview_lines<'a>(
+    fm: &'a FileMatches,
+    replacement: &'a str,
+    is_preview_focused: bool,
+    selected_match: usize,
+) -> (Vec<Line<'a>>, Range<usize>) {
     let mut lines: Vec<Line> = vec![];
-    let mut selected_line: u16 = 0;
+    let mut selected_range: Range<usize> = 0..0;
 
     for (match_idx, m) in fm.matches.iter().enumerate() {
-        let is_selected = app.focused_pane == Pane::Preview && match_idx == app.selected_match;
-        if is_selected {
-            selected_line = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-        }
+        let is_selected = is_preview_focused && match_idx == selected_match;
+        let match_start = lines.len();
 
         // Header line for this match
         let header_style = if is_selected {
@@ -240,17 +230,62 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
         }
 
         lines.push(Line::raw(""));
+
+        if is_selected {
+            selected_range = match_start..lines.len();
+        }
     }
 
-    // Auto-scroll to keep selected match visible
-    let visible_height = inner.height;
-    if selected_line < app.preview_scroll {
-        app.preview_scroll = selected_line;
-    } else if selected_line >= app.preview_scroll + visible_height {
-        app.preview_scroll = selected_line - visible_height + 1;
-    }
+    (lines, selected_range)
+}
 
-    frame.render_widget(Paragraph::new(lines).scroll((app.preview_scroll, 0)), inner);
+fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
+    let border_style = focused_border_style(Pane::Preview, app.focused_pane);
+    let block = Block::bordered()
+        .border_set(border::ROUNDED)
+        .border_style(border_style)
+        .title("Preview");
+
+    let Some(fm) = app.results.get(app.selected_file) else {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new("Select a file").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    };
+
+    let v_scroll = Scroll::vertical().style(border_style);
+    let scroll_area = ScrollArea::new()
+        .block(Some(&block))
+        .v_scroll(Some(&v_scroll));
+    let inner = scroll_area.inner(area, None, Some(&app.preview_scroll));
+
+    let replacement = app.replace_input.text();
+    let is_preview_focused = app.focused_pane == Pane::Preview;
+    let (lines, selected_range) =
+        build_preview_lines(fm, replacement, is_preview_focused, app.selected_match);
+
+    // Update scroll state and auto-scroll to keep selected match visible
+    app.preview_scroll.set_page_len(inner.height as usize);
+    app.preview_scroll
+        .set_max_offset(lines.len().saturating_sub(inner.height as usize));
+    app.preview_scroll.scroll_to_range(selected_range);
+
+    let offset = app.preview_scroll.offset;
+
+    scroll_area.render(
+        area,
+        frame.buffer_mut(),
+        &mut ScrollAreaState::new()
+            .area(area)
+            .v_scroll(&mut app.preview_scroll),
+    );
+
+    #[expect(clippy::cast_possible_truncation)]
+    let scroll_offset = (offset as u16, 0);
+    frame.render_widget(Paragraph::new(lines).scroll(scroll_offset), inner);
 }
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
