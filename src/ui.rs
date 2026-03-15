@@ -120,7 +120,8 @@ fn render_file_list(app: &App, frame: &mut Frame, area: Rect) {
         .map(|(i, fm)| {
             let active = fm.active_match_count();
             let total = fm.matches.len();
-            let label = format!("{} ({}/{})", fm.path.display(), active, total);
+            let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
+            let label = format!("{} ({}/{})", rel.display(), active, total);
             let style = if i == app.selected_file {
                 Style::default()
                     .fg(Color::Cyan)

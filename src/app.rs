@@ -16,6 +16,7 @@ const DEBOUNCE: Duration = Duration::from_millis(100);
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 
 pub struct App {
+    pub root: PathBuf,
     pub search_input: TextInputState,
     pub replace_input: TextInputState,
     pub match_mode: MatchMode,
@@ -40,10 +41,11 @@ impl App {
         let (result_tx, result_rx) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        let worker = SearchWorker::new(root, cmd_rx, result_tx, cancelled.clone());
+        let worker = SearchWorker::new(root.clone(), cmd_rx, result_tx, cancelled.clone());
         std::thread::spawn(move || worker.run());
 
         Self {
+            root,
             search_input: TextInputState::new(),
             replace_input: TextInputState::new(),
             match_mode: MatchMode::default(),
