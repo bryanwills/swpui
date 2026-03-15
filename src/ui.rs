@@ -1,11 +1,11 @@
 use rat_widget::text::HasScreenCursor as _;
 use rat_widget::text_input::TextInput;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize as _};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, Paragraph, StatefulWidget as _, Wrap};
-use ratatui::Frame;
+use ratatui::widgets::{Block, List, ListItem, Paragraph, StatefulWidget as _};
 
 use crate::app::App;
 use crate::types::{MatchMode, Pane};
@@ -18,8 +18,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
     // Split content into left and right columns
-    let [left, right] = Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)])
-        .areas(content_area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).areas(content_area);
 
     // Left column: input area + file list
     let [input_area, file_area] =
@@ -48,12 +48,15 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
         MatchMode::Regex => "Search (regex)".to_string(),
     };
 
-    let search_border_style =
-        if app.status_message.as_ref().is_some_and(|msg| msg.contains("regex parse error")) {
-            Style::default().fg(Color::Red)
-        } else {
-            focused_border_style(Pane::SearchInput, app.focused_pane)
-        };
+    let search_border_style = if app
+        .status_message
+        .as_ref()
+        .is_some_and(|msg| msg.contains("regex parse error"))
+    {
+        Style::default().fg(Color::Red)
+    } else {
+        focused_border_style(Pane::SearchInput, app.focused_pane)
+    };
 
     // Search input
     let search_focused = app.focused_pane == Pane::SearchInput;
@@ -139,7 +142,7 @@ fn render_file_list(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(list, inner);
 }
 
-fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
+fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let block = Block::bordered()
         .border_set(border::ROUNDED)
         .border_style(focused_border_style(Pane::Preview, app.focused_pane))
@@ -157,9 +160,13 @@ fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
 
     let replacement = app.replace_input.text();
     let mut lines: Vec<Line> = vec![];
+    let mut selected_line: u16 = 0;
 
     for (match_idx, m) in fm.matches.iter().enumerate() {
         let is_selected = app.focused_pane == Pane::Preview && match_idx == app.selected_match;
+        if is_selected {
+            selected_line = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        }
 
         // Header line for this match
         let header_style = if is_selected {
@@ -235,25 +242,30 @@ fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
         lines.push(Line::raw(""));
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    // Auto-scroll to keep selected match visible
+    let visible_height = inner.height;
+    if selected_line < app.preview_scroll {
+        app.preview_scroll = selected_line;
+    } else if selected_line >= app.preview_scroll + visible_height {
+        app.preview_scroll = selected_line - visible_height + 1;
+    }
+
+    frame.render_widget(Paragraph::new(lines).scroll((app.preview_scroll, 0)), inner);
 }
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let line = if let Some(msg) = &app.status_message {
-        Line::from(Span::styled(
-            msg.as_str(),
-            Style::default().fg(Color::Red),
-        ))
+        Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)))
     } else {
         let hints = match app.focused_pane {
             Pane::SearchInput | Pane::ReplaceInput => {
-                "Esc: file list | Tab/S-Tab: cycle | Ctrl-r: toggle regex | Ctrl-c: quit"
+                "tab/shift-tab: cycle | ctrl-r: toggle regex | esc: file list | q/ctrl-c: quit"
             }
             Pane::FileList => {
-                "j/k: navigate | l/Enter: preview | s: skip file | a: apply all | f: apply file | q: quit"
+                "tab/shift-tab: cycle | j/k: navigate | l/enter: preview | s: skip file | a: apply all | f: apply file | q/ctrl-c: quit"
             }
             Pane::Preview => {
-                "j/k: navigate | Space: toggle skip | s: skip file | Enter: apply match | h/Esc: back | a: apply all"
+                "tab/shift-tab: cycle | j/k: navigate | h/esc: back | space: toggle skip | s: skip file | enter: apply match | a: apply all | q/ctrl-c: quit"
             }
         };
         Line::from(hints.blue())

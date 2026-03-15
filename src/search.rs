@@ -1,8 +1,8 @@
 use crate::types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
 
 const CONTEXT_LINES: usize = 3;
 
@@ -20,8 +20,7 @@ pub fn find_matches_in_content(
             let pattern_bytes = pattern.as_bytes();
             let mut ranges = vec![];
             let mut start = 0;
-            while let Some(pos) =
-                memchr::memmem::find(&content.as_bytes()[start..], pattern_bytes)
+            while let Some(pos) = memchr::memmem::find(&content.as_bytes()[start..], pattern_bytes)
             {
                 let abs_pos = start + pos;
                 ranges.push((abs_pos, abs_pos + pattern_bytes.len()));
