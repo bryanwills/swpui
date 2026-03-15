@@ -207,6 +207,7 @@ impl App {
             KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right if !self.results.is_empty() => {
                 self.focused_pane = Pane::Preview;
             }
+            KeyCode::Char('s') => self.toggle_skip_file(),
             KeyCode::Char('a') => self.apply_all(),
             KeyCode::Char('f') => self.apply_file(),
             _ => {}
@@ -237,9 +238,20 @@ impl App {
             KeyCode::Char('h') | KeyCode::Esc | KeyCode::Left => {
                 self.focused_pane = Pane::FileList;
             }
+            KeyCode::Char('s') => self.toggle_skip_file(),
             KeyCode::Char('a') => self.apply_all(),
             KeyCode::Char('f') => self.apply_file(),
             _ => {}
+        }
+    }
+
+    fn toggle_skip_file(&mut self) {
+        let Some(fm) = self.results.get_mut(self.selected_file) else {
+            return;
+        };
+        let all_skipped = fm.matches.iter().all(|m| m.skip);
+        for m in &mut fm.matches {
+            m.skip = !all_skipped;
         }
     }
 

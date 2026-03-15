@@ -249,10 +249,10 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                 "Esc: file list | Tab/S-Tab: cycle | Ctrl-r: toggle regex | Ctrl-c: quit"
             }
             Pane::FileList => {
-                "j/k: navigate | l/Enter: preview | a: apply all | f: apply file | q: quit"
+                "j/k: navigate | l/Enter: preview | s: skip file | a: apply all | f: apply file | q: quit"
             }
             Pane::Preview => {
-                "j/k: navigate | Space: toggle skip | Enter: apply match | h/Esc: back | a: apply all"
+                "j/k: navigate | Space: toggle skip | s: skip file | Enter: apply match | h/Esc: back | a: apply all"
             }
         };
         Line::from(hints.blue())
