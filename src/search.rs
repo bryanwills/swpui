@@ -1,11 +1,18 @@
-use crate::replace::hash_content;
-use crate::types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender},
+    },
+};
 
-const CONTEXT_LINES: usize = 3;
+use crate::{
+    replace::hash_content,
+    types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult},
+};
+
+pub const CONTEXT_LINES: usize = 3;
 
 pub fn find_matches_in_content(
     content: &str,
@@ -13,13 +20,13 @@ pub fn find_matches_in_content(
     mode: MatchMode,
 ) -> anyhow::Result<Vec<MatchInfo>> {
     if pattern.is_empty() {
-        return Ok(vec![]);
+        return Ok(Vec::new());
     }
 
     let byte_ranges: Vec<(usize, usize)> = match mode {
         MatchMode::Literal => {
             let pattern_bytes = pattern.as_bytes();
-            let mut ranges = vec![];
+            let mut ranges = Vec::new();
             let mut start = 0;
             while let Some(pos) = memchr::memmem::find(&content.as_bytes()[start..], pattern_bytes)
             {
@@ -93,7 +100,7 @@ pub fn find_matches_in_content(
 #[must_use]
 pub fn search_directory(dir: &Path, pattern: &str, mode: MatchMode) -> Vec<FileMatches> {
     let walker = ignore::WalkBuilder::new(dir).build();
-    let mut results = vec![];
+    let mut results = Vec::new();
     for entry in walker.flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;

@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, ListItem, Paragraph, StatefulWidget as _};
 
 use crate::app::App;
+use crate::search::CONTEXT_LINES;
 use crate::types::{FileMatches, MatchMode, Pane};
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -164,7 +165,7 @@ fn build_preview_lines<'a>(
     is_preview_focused: bool,
     selected_match: usize,
 ) -> (Vec<Line<'a>>, Range<usize>) {
-    let mut lines: Vec<Line> = vec![];
+    let mut lines: Vec<Line> = Vec::with_capacity(fm.matches.len() * CONTEXT_LINES * 2 + 3);
     let mut selected_range: Range<usize> = 0..0;
 
     for (match_idx, m) in fm.matches.iter().enumerate() {
