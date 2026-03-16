@@ -1,20 +1,25 @@
+use std::{
+    cmp::Reverse,
+    fs,
+    io::{BufReader, Read, Write as _},
+    path::Path,
+};
+
+use sha2::{Digest as _, Sha256};
+
 use crate::types::MatchInfo;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::io::Write as _;
-use std::path::Path;
 
 #[must_use]
 pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &str) -> String {
     let mut active: Vec<&MatchInfo> = matches.iter().filter(|m| !m.skip).collect();
+    let mut result = content.to_string();
     if active.is_empty() {
-        return content.to_string();
+        return result;
     }
 
-    // Sort by byte offset descending so we can replace from the end
-    active.sort_by_key(|m| std::cmp::Reverse(m.byte_offset_start));
+    // sort by byte offset in descending order so we can replace from the end
+    active.sort_unstable_by_key(|m| Reverse(m.byte_offset_start));
 
-    let mut result = content.to_string();
     for m in active {
         result.replace_range(m.byte_offset_start..m.byte_offset_end, replacement);
     }
@@ -24,36 +29,46 @@ pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &st
 #[must_use]
 pub fn has_overlapping_matches(matches: &[MatchInfo]) -> bool {
     let mut active: Vec<&MatchInfo> = matches.iter().filter(|m| !m.skip).collect();
-    active.sort_by_key(|m| m.byte_offset_start);
+    active.sort_unstable_by_key(|m| m.byte_offset_start);
     active
-        .windows(2)
-        .any(|w| w[0].byte_offset_end > w[1].byte_offset_start)
+        .array_windows()
+        .any(|[w0, w1]| w0.byte_offset_end > w1.byte_offset_start)
 }
 
-pub fn write_file_atomically(path: &Path, content: &str) -> anyhow::Result<()> {
+pub fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new()?;
     tmp.write_all(content.as_bytes())?;
     tmp.persist(path)?;
     Ok(())
 }
 
-#[must_use]
-pub fn compute_content_hash(content: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    hasher.finish()
+/// Hash the contents of a Reader with SHA256
+pub fn hash_content<R: Read>(content: &mut R) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let mut buf = [0; 1024];
+    while let Ok(size) = content.read(&mut buf) {
+        if size == 0 {
+            break;
+        }
+        hasher.update(&buf[0..size]);
+    }
+    hasher.finalize().into()
 }
 
-pub fn is_file_stale(path: &Path, original_hash: u64) -> anyhow::Result<bool> {
-    let current_content = std::fs::read_to_string(path)?;
-    Ok(compute_content_hash(&current_content) != original_hash)
+pub fn hash_file(path: impl AsRef<Path>) -> anyhow::Result<[u8; 32]> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    Ok(hash_content(&mut reader))
+}
+
+pub fn is_file_stale(path: impl AsRef<Path>, original_hash: [u8; 32]) -> anyhow::Result<bool> {
+    Ok(hash_file(path)? != original_hash)
 }
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::types::MatchInfo;
 
     fn make_match(start: usize, end: usize) -> MatchInfo {
         MatchInfo {
@@ -139,21 +154,21 @@ mod tests {
     fn write_file_atomically_succeeds() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.txt");
-        std::fs::write(&path, "original").unwrap();
-        let result = write_file_atomically(&path, "replaced");
+        fs::write(&path, "original").unwrap();
+        let result = write_file(&path, "replaced");
         assert!(result.is_ok());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "replaced");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "replaced");
     }
 
     #[test]
     fn stale_file_detected() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.txt");
-        std::fs::write(&path, "original content").unwrap();
-        let hash = compute_content_hash("original content");
+        fs::write(&path, "original content").unwrap();
+        let hash = hash_file(&path).unwrap();
 
         // Modify the file externally
-        std::fs::write(&path, "modified content").unwrap();
+        fs::write(&path, "modified content").unwrap();
 
         assert!(is_file_stale(&path, hash).unwrap());
     }
@@ -162,8 +177,8 @@ mod tests {
     fn fresh_file_not_stale() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.txt");
-        std::fs::write(&path, "original content").unwrap();
-        let hash = compute_content_hash("original content");
+        fs::write(&path, "original content").unwrap();
+        let hash = hash_file(&path).unwrap();
 
         assert!(!is_file_stale(&path, hash).unwrap());
     }

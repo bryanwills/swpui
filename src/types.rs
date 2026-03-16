@@ -41,7 +41,7 @@ pub struct MatchInfo {
 pub struct FileMatches {
     pub path: PathBuf,
     pub matches: Vec<MatchInfo>,
-    pub content_hash: u64,
+    pub content_hash: [u8; 32],
 }
 
 impl FileMatches {
@@ -174,7 +174,7 @@ mod tests {
                     skip: true,
                 },
             ],
-            content_hash: 0,
+            content_hash: [0; 32],
         };
         assert_eq!(fm.matches.len(), 2);
         assert_eq!(fm.active_match_count(), 1);

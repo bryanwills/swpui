@@ -1,3 +1,4 @@
+use crate::replace::hash_content;
 use crate::types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -104,10 +105,11 @@ pub fn search_directory(dir: &Path, pattern: &str, mode: MatchMode) -> Vec<FileM
             continue;
         };
         if !matches.is_empty() {
+            let content_hash = hash_content(&mut content.as_bytes());
             results.push(FileMatches {
                 path: entry.path().to_path_buf(),
                 matches,
-                content_hash: crate::replace::compute_content_hash(&content),
+                content_hash,
             });
         }
     }
@@ -175,10 +177,11 @@ impl SearchWorker {
             };
 
             if !matches.is_empty() {
+                let content_hash = hash_content(&mut content.as_bytes());
                 let file_matches = FileMatches {
                     path: entry.path().to_path_buf(),
                     matches,
-                    content_hash: crate::replace::compute_content_hash(&content),
+                    content_hash,
                 };
                 if self
                     .result_tx

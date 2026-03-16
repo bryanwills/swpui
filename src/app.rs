@@ -360,7 +360,7 @@ impl App {
             }
         };
         let new_content = replace::apply_replacements(&content, slice::from_ref(m), &replacement);
-        if let Err(e) = replace::write_file_atomically(&fm.path, &new_content) {
+        if let Err(e) = replace::write_file(&fm.path, &new_content) {
             self.status_message = Some(format!("{}: {e}", fm.path.display()));
             return;
         }
@@ -379,7 +379,7 @@ impl App {
         }
         let content = fs::read_to_string(&fm.path)?;
         let new_content = replace::apply_replacements(&content, &fm.matches, replacement);
-        replace::write_file_atomically(&fm.path, &new_content)?;
+        replace::write_file(&fm.path, &new_content)?;
         Ok(())
     }
 

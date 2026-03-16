@@ -1,9 +1,7 @@
 #![expect(clippy::unwrap_used)]
 
 use std::io::Write as _;
-use swpui::replace::{
-    apply_replacements, compute_content_hash, is_file_stale, write_file_atomically,
-};
+use swpui::replace::{apply_replacements, hash_file, is_file_stale, write_file};
 use swpui::search::{find_matches_in_content, search_directory};
 use swpui::types::MatchMode;
 
@@ -39,7 +37,7 @@ fn full_search_and_replace_workflow() {
     assert_eq!(new_content, "hi world\nhi rust\n");
 
     // Write atomically
-    write_file_atomically(&fm.path, &new_content).unwrap();
+    write_file(&fm.path, &new_content).unwrap();
     assert_eq!(
         std::fs::read_to_string(&fm.path).unwrap(),
         "hi world\nhi rust\n"
@@ -50,7 +48,7 @@ fn full_search_and_replace_workflow() {
 fn stale_file_prevents_write() {
     let dir = create_test_dir(&[("test.txt", "original content\n")]);
     let path = dir.path().join("test.txt");
-    let hash = compute_content_hash("original content\n");
+    let hash = hash_file(&path).unwrap();
 
     // Modify externally
     std::fs::write(&path, "someone else changed this\n").unwrap();
