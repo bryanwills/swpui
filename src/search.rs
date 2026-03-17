@@ -147,7 +147,7 @@ impl SearchWorker {
         let walker = ignore::WalkBuilder::new(&self.root).build();
         for entry in walker.flatten() {
             if self.cancelled.load(Ordering::Relaxed) {
-                return;
+                break;
             }
 
             if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -178,7 +178,7 @@ impl SearchWorker {
                 .send(SearchResult::FileMatches(request.generation, file_matches))
                 .is_err()
             {
-                return;
+                break;
             }
         }
         let _ = self

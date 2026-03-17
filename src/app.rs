@@ -43,6 +43,7 @@ pub struct App {
     pub selected_match: usize,
     pub preview_scroll: ScrollState,
     pub status_message: Option<String>,
+    pub searching: bool,
     exit: bool,
     generation: u64,
     last_keystroke: Option<Instant>,
@@ -73,6 +74,7 @@ impl App {
             selected_match: 0,
             preview_scroll: ScrollState::new(),
             status_message: None,
+            searching: false,
             exit: false,
             generation: 0,
             last_keystroke: None,
@@ -121,9 +123,11 @@ impl App {
                 }
                 SearchResult::Complete(generation) if generation == self.generation => {
                     self.results.sort_by(|a, b| a.path.cmp(&b.path));
+                    self.searching = false;
                 }
                 SearchResult::Error(generation, msg) if generation == self.generation => {
                     self.status_message = Some(msg);
+                    self.searching = false;
                 }
                 SearchResult::FileMatches(..)
                 | SearchResult::Complete(..)
@@ -152,6 +156,7 @@ impl App {
     fn dispatch_search(&mut self) {
         self.results.clear();
         self.status_message = None;
+        self.searching = true;
         let pattern = self.search_input.text();
         if pattern.is_empty() {
             return;
@@ -176,10 +181,16 @@ impl App {
             }
             KeyCode::BackTab => {
                 self.focused_pane = self.focused_pane.prev();
+                while self.searching && !self.focused_pane.is_input() {
+                    self.focused_pane = self.focused_pane.prev();
+                }
                 return;
             }
             KeyCode::Tab => {
                 self.focused_pane = self.focused_pane.next();
+                while self.searching && !self.focused_pane.is_input() {
+                    self.focused_pane = self.focused_pane.next();
+                }
                 return;
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -207,8 +218,9 @@ impl App {
             Pane::ReplaceInput => {
                 text_input::handle_events(&mut self.replace_input, true, &Event::Key(key));
             }
-            Pane::FileList => self.handle_file_list_key(key),
-            Pane::Preview => self.handle_preview_key(key),
+            Pane::FileList if !self.searching => self.handle_file_list_key(key),
+            Pane::Preview if !self.searching => self.handle_preview_key(key),
+            _ => {}
         }
     }
 
