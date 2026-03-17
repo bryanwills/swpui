@@ -1,5 +1,6 @@
 use std::{
-    path::{Path, PathBuf},
+    fs,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -24,18 +25,9 @@ pub fn find_matches_in_content(
     }
 
     let byte_ranges: Vec<(usize, usize)> = match mode {
-        MatchMode::Literal => {
-            let pattern_bytes = pattern.as_bytes();
-            let mut ranges = Vec::new();
-            let mut start = 0;
-            while let Some(pos) = memchr::memmem::find(&content.as_bytes()[start..], pattern_bytes)
-            {
-                let abs_pos = start + pos;
-                ranges.push((abs_pos, abs_pos + pattern_bytes.len()));
-                start = abs_pos + pattern_bytes.len();
-            }
-            ranges
-        }
+        MatchMode::Literal => memchr::memmem::find_iter(content.as_bytes(), pattern.as_bytes())
+            .map(|pos| (pos, pos + pattern.len()))
+            .collect(),
         MatchMode::Regex => {
             let re = regex::Regex::new(pattern)?;
             re.find_iter(content)
@@ -44,39 +36,49 @@ pub fn find_matches_in_content(
         }
     };
 
-    let lines: Vec<&str> = content.lines().collect();
-    let line_byte_offsets: Vec<usize> = std::iter::once(0)
-        .chain(content.match_indices('\n').map(|(i, _)| i + 1))
+    let mut line_starts: Vec<usize> = std::iter::once(0)
+        .chain(memchr::memchr_iter(b'\n', content.as_bytes()).map(|i| i + 1))
         .collect();
+    // remove trailing empty line
+    if line_starts.last() == Some(&content.len()) {
+        line_starts.pop();
+    }
+    let num_lines = line_starts.len();
+
+    let get_line = |idx: usize| -> &str {
+        let start = line_starts[idx];
+        let end = line_starts.get(idx + 1).map_or(content.len(), |&s| s - 1);
+        content[start..end].trim_end_matches('\n')
+    };
 
     let mut matches = Vec::with_capacity(byte_ranges.len());
+    let mut line_idx = 0;
     for (byte_start, byte_end) in byte_ranges {
-        let line_idx = line_byte_offsets
-            .partition_point(|&offset| offset <= byte_start)
-            .saturating_sub(1);
+        while line_starts
+            .get(line_idx + 1)
+            .is_some_and(|&offset| offset <= byte_start)
+        {
+            line_idx += 1;
+        }
         let line_number = line_idx + 1;
 
         let context_before: Vec<ContextLine> = (line_idx.saturating_sub(CONTEXT_LINES)..line_idx)
-            .filter_map(|i| {
-                lines.get(i).map(|content| ContextLine {
-                    line_number: i + 1,
-                    content: (*content).to_string(),
-                })
+            .map(|i| ContextLine {
+                line_number: i + 1,
+                content: get_line(i).to_string(),
             })
             .collect();
 
         let context_after: Vec<ContextLine> = ((line_idx + 1)
-            ..=(line_idx + CONTEXT_LINES).min(lines.len().saturating_sub(1)))
-            .filter_map(|i| {
-                lines.get(i).map(|content| ContextLine {
-                    line_number: i + 1,
-                    content: (*content).to_string(),
-                })
+            ..=(line_idx + CONTEXT_LINES).min(num_lines.saturating_sub(1)))
+            .map(|i| ContextLine {
+                line_number: i + 1,
+                content: get_line(i).to_string(),
             })
             .collect();
 
-        let line_start_byte = line_byte_offsets[line_idx];
-        let line_str = lines.get(line_idx).copied().unwrap_or("");
+        let line_start_byte = line_starts[line_idx];
+        let line_str = get_line(line_idx);
         let match_col_start = byte_start - line_start_byte;
         let match_col_end = (byte_end - line_start_byte).min(line_str.len());
 
@@ -95,32 +97,6 @@ pub fn find_matches_in_content(
     }
 
     Ok(matches)
-}
-
-#[must_use]
-pub fn search_directory(dir: &Path, pattern: &str, mode: MatchMode) -> Vec<FileMatches> {
-    let walker = ignore::WalkBuilder::new(dir).build();
-    let mut results = Vec::new();
-    for entry in walker.flatten() {
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(matches) = find_matches_in_content(&content, pattern, mode) else {
-            continue;
-        };
-        if !matches.is_empty() {
-            let content_hash = hash_content(&mut content.as_bytes());
-            results.push(FileMatches {
-                path: entry.path().to_path_buf(),
-                matches,
-                content_hash,
-            });
-        }
-    }
-    results
 }
 
 pub struct SearchWorker {
@@ -146,14 +122,19 @@ impl SearchWorker {
     }
 
     pub fn run(self) {
-        while let Ok(request) = self.cmd_rx.recv() {
+        while let Ok(mut request) = self.cmd_rx.recv() {
+            // skip to the latest queued request in case there are multiple
+            // this makes cancellation faster
+            while let Ok(newer) = self.cmd_rx.try_recv() {
+                request = newer;
+            }
             self.cancelled.store(false, Ordering::Relaxed);
             self.execute_search(&request);
         }
     }
 
     fn execute_search(&self, request: &SearchRequest) {
-        // Validate regex upfront before walking files
+        // validate regex upfront before walking files
         if request.mode == MatchMode::Regex
             && let Err(e) = regex::Regex::new(&request.pattern)
         {
@@ -166,7 +147,6 @@ impl SearchWorker {
         let walker = ignore::WalkBuilder::new(&self.root).build();
         for entry in walker.flatten() {
             if self.cancelled.load(Ordering::Relaxed) {
-                self.drain_stale_requests();
                 return;
             }
 
@@ -174,7 +154,7 @@ impl SearchWorker {
                 continue;
             }
 
-            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            let Ok(content) = fs::read_to_string(entry.path()) else {
                 continue;
             };
 
@@ -183,29 +163,27 @@ impl SearchWorker {
                 continue;
             };
 
-            if !matches.is_empty() {
-                let content_hash = hash_content(&mut content.as_bytes());
-                let file_matches = FileMatches {
-                    path: entry.path().to_path_buf(),
-                    matches,
-                    content_hash,
-                };
-                if self
-                    .result_tx
-                    .send(SearchResult::FileMatches(request.generation, file_matches))
-                    .is_err()
-                {
-                    return;
-                }
+            if matches.is_empty() {
+                continue;
+            }
+
+            let content_hash = hash_content(&mut content.as_bytes());
+            let file_matches = FileMatches {
+                path: entry.path().to_path_buf(),
+                matches,
+                content_hash,
+            };
+            if self
+                .result_tx
+                .send(SearchResult::FileMatches(request.generation, file_matches))
+                .is_err()
+            {
+                return;
             }
         }
         let _ = self
             .result_tx
             .send(SearchResult::Complete(request.generation));
-    }
-
-    fn drain_stale_requests(&self) {
-        while self.cmd_rx.try_recv().is_ok() {}
     }
 }
 
@@ -213,7 +191,7 @@ impl SearchWorker {
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
+    use std::{io::Write as _, sync::mpsc, thread, time::Duration};
     use tempfile::TempDir;
 
     fn create_test_dir(files: &[(&str, &str)]) -> TempDir {
@@ -221,9 +199,9 @@ mod tests {
         for (name, content) in files {
             let path = dir.path().join(name);
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
+                fs::create_dir_all(parent).unwrap();
             }
-            let mut f = std::fs::File::create(&path).unwrap();
+            let mut f = fs::File::create(&path).unwrap();
             f.write_all(content.as_bytes()).unwrap();
         }
         dir
@@ -304,38 +282,13 @@ mod tests {
     }
 
     #[test]
-    fn search_walks_directory() {
-        let dir = create_test_dir(&[
-            ("a.txt", "hello world\n"),
-            ("b.txt", "goodbye world\n"),
-            ("c.txt", "no match\n"),
-        ]);
-        let results = search_directory(dir.path(), "world", MatchMode::Literal);
-        assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn search_respects_gitignore() {
-        let dir = create_test_dir(&[
-            (".gitignore", "ignored.txt\n"),
-            ("included.txt", "hello\n"),
-            ("ignored.txt", "hello\n"),
-        ]);
-        // The ignore crate needs a .git directory to recognize the repo root
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        let results = search_directory(dir.path(), "hello", MatchMode::Literal);
-        assert_eq!(results.len(), 1);
-        assert!(results[0].path.ends_with("included.txt"));
-    }
-
-    #[test]
     fn search_worker_sends_results() {
         let dir = create_test_dir(&[("test.txt", "foo bar foo\n")]);
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
-        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
         let worker = SearchWorker::new(dir.path().to_path_buf(), cmd_rx, result_tx, cancelled);
-        let handle = std::thread::spawn(move || worker.run());
+        let handle = thread::spawn(move || worker.run());
 
         cmd_tx
             .send(SearchRequest {
@@ -347,10 +300,7 @@ mod tests {
 
         let mut got_file = false;
         loop {
-            match result_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap()
-            {
+            match result_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
                 SearchResult::FileMatches(generation, fm) => {
                     assert_eq!(generation, 1);
                     assert_eq!(fm.matches.len(), 2);
@@ -376,16 +326,16 @@ mod tests {
             ("b.txt", "needle\n"),
             ("c.txt", "needle\n"),
         ]);
-        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
-        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
         let worker = SearchWorker::new(
             dir.path().to_path_buf(),
             cmd_rx,
             result_tx,
             cancelled.clone(),
         );
-        let handle = std::thread::spawn(move || worker.run());
+        let handle = thread::spawn(move || worker.run());
 
         // Send first request then immediately cancel and send second
         cmd_tx
@@ -396,7 +346,7 @@ mod tests {
             })
             .unwrap();
 
-        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        cancelled.store(true, Ordering::Relaxed);
 
         cmd_tx
             .send(SearchRequest {
@@ -409,7 +359,7 @@ mod tests {
         // Drain results — we should eventually get Complete(2)
         let mut got_gen2_complete = false;
         loop {
-            match result_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            match result_rx.recv_timeout(Duration::from_secs(2)) {
                 Ok(SearchResult::Complete(2)) => {
                     got_gen2_complete = true;
                     break;

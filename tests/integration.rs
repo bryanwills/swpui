@@ -2,7 +2,7 @@
 
 use std::io::Write as _;
 use swpui::replace::{apply_replacements, hash_file, is_file_stale, write_file};
-use swpui::search::{find_matches_in_content, search_directory};
+use swpui::search::find_matches_in_content;
 use swpui::types::MatchMode;
 
 fn create_test_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -20,26 +20,22 @@ fn create_test_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
 
 #[test]
 fn full_search_and_replace_workflow() {
-    let dir = create_test_dir(&[
-        ("hello.txt", "hello world\nhello rust\n"),
-        ("other.txt", "no match here\n"),
-    ]);
+    let dir = create_test_dir(&[("hello.txt", "hello world\nhello rust\n")]);
+    let path = dir.path().join("hello.txt");
+    let content = std::fs::read_to_string(&path).unwrap();
 
     // Search
-    let results = search_directory(dir.path(), "hello", MatchMode::Literal);
-    assert_eq!(results.len(), 1);
-    let fm = &results[0];
-    assert_eq!(fm.matches.len(), 2);
+    let matches = find_matches_in_content(&content, "hello", MatchMode::Literal).unwrap();
+    assert_eq!(matches.len(), 2);
 
     // Apply replacements
-    let content = std::fs::read_to_string(&fm.path).unwrap();
-    let new_content = apply_replacements(&content, &fm.matches, "hi");
+    let new_content = apply_replacements(&content, &matches, "hi");
     assert_eq!(new_content, "hi world\nhi rust\n");
 
     // Write atomically
-    write_file(&fm.path, &new_content).unwrap();
+    write_file(&path, &new_content).unwrap();
     assert_eq!(
-        std::fs::read_to_string(&fm.path).unwrap(),
+        std::fs::read_to_string(&path).unwrap(),
         "hi world\nhi rust\n"
     );
 }
