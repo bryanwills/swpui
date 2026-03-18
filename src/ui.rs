@@ -285,14 +285,13 @@ fn build_preview_lines<'a>(
 fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let border_style = focused_border_style(Pane::Preview, app.focused_pane);
 
-    let title = app
-        .results
-        .get(app.selected_file())
-        .map(|fm| {
+    let title = app.results.get(app.selected_file()).map_or_else(
+        || "Preview".to_string(),
+        |fm| {
             let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
             format!("Preview: {}", rel.display())
-        })
-        .unwrap_or_else(|| "Preview".to_string());
+        },
+    );
 
     let block = Block::bordered()
         .border_set(border::ROUNDED)
