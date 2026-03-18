@@ -8,6 +8,8 @@ use std::{
     },
 };
 
+use ignore::{WalkBuilder, WalkState};
+
 use crate::{
     replace::hash_content,
     types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult},
@@ -144,43 +146,58 @@ impl SearchWorker {
             return;
         }
 
-        let walker = ignore::WalkBuilder::new(&self.root).build();
-        for entry in walker.flatten() {
-            if self.cancelled.load(Ordering::Relaxed) {
-                break;
-            }
+        let walker = WalkBuilder::new(&self.root)
+            .filter_entry(|entry| {
+                !(entry.path().is_dir() && entry.path().file_name().unwrap_or_default() == ".git")
+            })
+            .hidden(false)
+            .build_parallel();
+        let cancelled = &self.cancelled;
+        let result_tx = &self.result_tx;
+        walker.run(|| {
+            let result_tx = result_tx.clone();
+            Box::new(move |entry| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
 
-            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                continue;
-            }
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
 
-            let Ok(content) = fs::read_to_string(entry.path()) else {
-                continue;
-            };
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    return WalkState::Continue;
+                }
 
-            let Ok(matches) = find_matches_in_content(&content, &request.pattern, request.mode)
-            else {
-                continue;
-            };
+                let Ok(content) = fs::read_to_string(entry.path()) else {
+                    return WalkState::Continue;
+                };
 
-            if matches.is_empty() {
-                continue;
-            }
+                let Ok(matches) = find_matches_in_content(&content, &request.pattern, request.mode)
+                else {
+                    return WalkState::Continue;
+                };
 
-            let content_hash = hash_content(&mut content.as_bytes());
-            let file_matches = FileMatches {
-                path: entry.path().to_path_buf(),
-                matches,
-                content_hash,
-            };
-            if self
-                .result_tx
-                .send(SearchResult::FileMatches(request.generation, file_matches))
-                .is_err()
-            {
-                break;
-            }
-        }
+                if matches.is_empty() {
+                    return WalkState::Continue;
+                }
+
+                let content_hash = hash_content(&mut content.as_bytes());
+                let file_matches = FileMatches {
+                    path: entry.path().to_path_buf(),
+                    matches,
+                    content_hash,
+                };
+                if result_tx
+                    .send(SearchResult::FileMatches(request.generation, file_matches))
+                    .is_err()
+                {
+                    return WalkState::Quit;
+                }
+
+                WalkState::Continue
+            })
+        });
         let _ = self
             .result_tx
             .send(SearchResult::Complete(request.generation));
