@@ -180,14 +180,14 @@ fn build_preview_lines<'a>(
             Style::default().fg(Color::DarkGray)
         };
         lines.push(Line::from(Span::styled(
-            format!("  line {}:", m.line_number),
+            format!(" line {}:", m.line_number),
             header_style,
         )));
 
         // Context before
         for ctx in &m.context_before {
             lines.push(Line::from(Span::styled(
-                format!("  {}", ctx.content),
+                format!(" {}", ctx.content),
                 Style::default().fg(Color::DarkGray),
             )));
         }
@@ -198,7 +198,7 @@ fn build_preview_lines<'a>(
 
         if m.skip {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::styled(before_match, Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     &m.matched_text,
@@ -211,7 +211,7 @@ fn build_preview_lines<'a>(
             ]));
         } else if !replacement.is_empty() {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::raw(before_match),
                 Span::styled(
                     &m.matched_text,
@@ -224,7 +224,7 @@ fn build_preview_lines<'a>(
             ]));
         } else {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::raw(before_match),
                 Span::styled(
                     &m.matched_text,
@@ -237,7 +237,7 @@ fn build_preview_lines<'a>(
         // Context after
         for ctx in &m.context_after {
             lines.push(Line::from(Span::styled(
-                format!("  {}", ctx.content),
+                format!(" {}", ctx.content),
                 Style::default().fg(Color::DarkGray),
             )));
         }
