@@ -105,7 +105,15 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
-    let title = format!("Files ({} matched)", app.results.len());
+    let title = if app.searching {
+        format!(
+            "{} Files ({} matched)",
+            app.spinner.frame(),
+            app.results.len()
+        )
+    } else {
+        format!("Files ({} matched)", app.results.len())
+    };
     let border_style = focused_border_style(Pane::FileList, app.focused_pane);
     let block = Block::bordered()
         .border_set(border::ROUNDED)
@@ -308,13 +316,13 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     } else {
         let hints = match app.focused_pane {
             Pane::SearchInput | Pane::ReplaceInput => {
-                "tab/shift-tab: cycle | ctrl-r: toggle regex | esc: file list | q/ctrl-c: quit"
+                "ctrl-r: toggle regex | esc: file list | tab/shift-tab: cycle | q/ctrl-c: quit"
             }
             Pane::FileList => {
-                "tab/shift-tab: cycle | j/k: navigate | l/enter: preview | s: skip file | a: apply all | f: apply file | q/ctrl-c: quit"
+                "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/shift-tab: cycle | q/ctrl-c: quit"
             }
             Pane::Preview => {
-                "tab/shift-tab: cycle | j/k: navigate | h/esc: back | space: toggle skip | s: skip file | enter: apply match | a: apply all | q/ctrl-c: quit"
+                "space: toggle skip | enter: apply match | s: skip file | a: apply all | j/k: navigate | h/esc: back | tab/shift-tab: cycle | q/ctrl-c: quit"
             }
         };
         Line::from(hints.blue())

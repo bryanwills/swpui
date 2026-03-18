@@ -25,6 +25,7 @@ use ratatui::{
 use crate::{
     replace,
     search::SearchWorker,
+    spinner::SpinnerState,
     types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult},
     ui,
 };
@@ -44,6 +45,7 @@ pub struct App {
     pub preview_scroll: ScrollState,
     pub status_message: Option<String>,
     pub searching: bool,
+    pub spinner: SpinnerState,
     exit: bool,
     generation: u64,
     last_keystroke: Option<Instant>,
@@ -75,6 +77,7 @@ impl App {
             preview_scroll: ScrollState::new(),
             status_message: None,
             searching: false,
+            spinner: SpinnerState::default(),
             exit: false,
             generation: 0,
             last_keystroke: None,
@@ -95,6 +98,9 @@ impl App {
             self.poll_events()?;
             self.poll_search_results();
             self.maybe_send_search();
+            if self.searching {
+                self.spinner.tick();
+            }
         }
         Ok(())
     }
