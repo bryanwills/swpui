@@ -139,8 +139,10 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
             let total = fm.matches.len();
             let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
             let name = if compact {
-                rel.file_name()
-                    .map_or_else(|| rel.display().to_string(), |n| n.to_string_lossy().into_owned())
+                rel.file_name().map_or_else(
+                    || rel.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
             } else {
                 rel.display().to_string()
             };
@@ -244,7 +246,12 @@ fn build_preview_lines<'a>(
                         .fg(Color::Red)
                         .add_modifier(Modifier::CROSSED_OUT),
                 ),
-                Span::styled(replacement, Style::default().fg(Color::Green)),
+                Span::styled(
+                    replacement,
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(after_match),
             ]));
         } else {
@@ -310,8 +317,13 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
 
     let replacement = app.replace_input.text();
     let is_preview_focused = app.focused_pane == Pane::Preview;
-    let (lines, selected_range) =
-        build_preview_lines(fm, replacement, is_preview_focused, app.selected_match, inner.width);
+    let (lines, selected_range) = build_preview_lines(
+        fm,
+        replacement,
+        is_preview_focused,
+        app.selected_match,
+        inner.width,
+    );
 
     // Update scroll state and auto-scroll to keep selected match visible
     app.preview_scroll.set_page_len(inner.height as usize);
