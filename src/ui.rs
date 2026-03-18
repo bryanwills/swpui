@@ -59,30 +59,18 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
         MatchMode::Regex => "Search (regex)".to_string(),
     };
 
-    let search_border_style = if app
-        .status_message
-        .as_ref()
-        .is_some_and(|msg| msg.contains("regex parse error"))
-    {
-        Style::default().fg(Color::Red)
-    } else {
-        focused_border_style(Pane::SearchInput, app.focused_pane)
-    };
-
     // Search input
-    let search_focused = app.focused_pane == Pane::SearchInput;
-    if search_focused {
-        app.search_input.focus.set(true);
-    } else {
-        app.search_input.focus.set(false);
-    }
+    app.search_input
+        .focus
+        .set(app.focused_pane == Pane::SearchInput);
     let search_block = Block::bordered()
         .border_set(border::ROUNDED)
-        .border_style(search_border_style)
+        .border_style(focused_border_style(Pane::SearchInput, app.focused_pane))
         .title(mode_label);
     TextInput::new()
         .style(Style::default())
         .focus_style(Style::default())
+        .invalid_style(Style::default().fg(Color::Red))
         .block(search_block)
         .render(search_area, frame.buffer_mut(), &mut app.search_input);
     if let Some((cx, cy)) = app.search_input.screen_cursor() {
@@ -90,12 +78,9 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     // Replace input
-    let replace_focused = app.focused_pane == Pane::ReplaceInput;
-    if replace_focused {
-        app.replace_input.focus.set(true);
-    } else {
-        app.replace_input.focus.set(false);
-    }
+    app.replace_input
+        .focus
+        .set(app.focused_pane == Pane::ReplaceInput);
     let replace_block = Block::bordered()
         .border_set(border::ROUNDED)
         .border_style(focused_border_style(Pane::ReplaceInput, app.focused_pane))
@@ -154,7 +139,7 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-    // Set up scroll state so scroll_to_selected works before render
+    // set up scroll state so scroll_to_selected works before render
     let inner_height = block.inner(area).height as usize;
     app.file_list.scroll.set_page_len(inner_height);
     app.file_list

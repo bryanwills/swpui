@@ -134,6 +134,7 @@ impl App {
                 SearchResult::Error(generation, msg) if generation == self.generation => {
                     self.status_message = Some(msg);
                     self.searching = false;
+                    self.search_input.set_invalid(true);
                 }
                 SearchResult::FileMatches(..)
                 | SearchResult::Complete(..)
@@ -162,6 +163,7 @@ impl App {
     fn dispatch_search(&mut self) {
         self.results.clear();
         self.status_message = None;
+        self.search_input.set_invalid(false);
         self.cancelled.store(true, Ordering::Relaxed); // cancel any ongoing search
         self.generation += 1;
         let pattern = self.search_input.text();
@@ -207,7 +209,7 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Esc if self.focused_pane.is_input() => {
+            KeyCode::Esc if self.focused_pane.is_input() && !self.searching => {
                 self.focused_pane = Pane::FileList;
                 return;
             }
@@ -216,9 +218,9 @@ impl App {
 
         match self.focused_pane {
             Pane::SearchInput => {
-                if text_input::handle_events(&mut self.search_input, true, &Event::Key(key))
-                    == TextOutcome::TextChanged
-                {
+                let outcome =
+                    text_input::handle_events(&mut self.search_input, true, &Event::Key(key));
+                if outcome == TextOutcome::TextChanged {
                     self.schedule_search();
                 }
             }
