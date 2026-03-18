@@ -129,6 +129,7 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let selected = app.file_list.selected();
+    let compact = app.focused_pane == Pane::Preview;
     let items: Vec<ListItem> = app
         .results
         .iter()
@@ -137,7 +138,13 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
             let active = fm.active_match_count();
             let total = fm.matches.len();
             let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
-            let label = format!("{} ({}/{})", rel.display(), active, total);
+            let name = if compact {
+                rel.file_name()
+                    .map_or_else(|| rel.display().to_string(), |n| n.to_string_lossy().into_owned())
+            } else {
+                rel.display().to_string()
+            };
+            let label = format!("{name} ({active}/{total})");
             if Some(i) != selected && active == 0 {
                 ListItem::new(Line::styled(label, Style::default().fg(Color::DarkGray)))
             } else {
@@ -170,12 +177,23 @@ fn build_preview_lines<'a>(
     replacement: &'a str,
     is_preview_focused: bool,
     selected_match: usize,
+    inner_width: u16,
 ) -> (Vec<Line<'a>>, Range<usize>) {
     let mut lines: Vec<Line> = Vec::with_capacity(fm.matches.len() * CONTEXT_LINES * 2 + 3);
     let mut selected_range: Range<usize> = 0..0;
+    let separator: String = "─".repeat(inner_width as usize);
 
     for (match_idx, m) in fm.matches.iter().enumerate() {
         let is_selected = is_preview_focused && match_idx == selected_match;
+
+        // Horizontal separator between matches
+        if match_idx > 0 {
+            lines.push(Line::styled(
+                separator.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
         let match_start = lines.len();
 
         // Header line for this match
@@ -249,8 +267,6 @@ fn build_preview_lines<'a>(
             )));
         }
 
-        lines.push(Line::raw(""));
-
         if is_selected {
             selected_range = match_start..lines.len();
         }
@@ -261,10 +277,20 @@ fn build_preview_lines<'a>(
 
 fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let border_style = focused_border_style(Pane::Preview, app.focused_pane);
+
+    let title = app
+        .results
+        .get(app.selected_file())
+        .map(|fm| {
+            let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
+            format!("Preview: {}", rel.display())
+        })
+        .unwrap_or_else(|| "Preview".to_string());
+
     let block = Block::bordered()
         .border_set(border::ROUNDED)
         .border_style(border_style)
-        .title("Preview");
+        .title(title);
 
     let Some(fm) = app.results.get(app.selected_file()) else {
         let inner = block.inner(area);
@@ -285,7 +311,7 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let replacement = app.replace_input.text();
     let is_preview_focused = app.focused_pane == Pane::Preview;
     let (lines, selected_range) =
-        build_preview_lines(fm, replacement, is_preview_focused, app.selected_match);
+        build_preview_lines(fm, replacement, is_preview_focused, app.selected_match, inner.width);
 
     // Update scroll state and auto-scroll to keep selected match visible
     app.preview_scroll.set_page_len(inner.height as usize);
