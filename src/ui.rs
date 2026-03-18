@@ -29,8 +29,15 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
     // split content into left and right columns
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).areas(content_area);
+    // shrink the file list when the preview pane is focused
+    let left_size = if app.focused_pane == Pane::Preview {
+        let target = content_area.width / 5;
+        Constraint::Length(target.max(10))
+    } else {
+        let target = content_area.width / 2;
+        Constraint::Length(target.min(50))
+    };
+    let [left, right] = Layout::horizontal([left_size, Constraint::Fill(1)]).areas(content_area);
 
     // left column: input area + file list
     let [input_area, file_area] =
