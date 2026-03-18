@@ -1,32 +1,38 @@
 use std::ops::Range;
 
-use rat_widget::list::List;
-use rat_widget::scrolled::{Scroll, ScrollArea, ScrollAreaState};
-use rat_widget::text::HasScreenCursor as _;
-use rat_widget::text_input::TextInput;
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize as _};
-use ratatui::symbols::border;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, ListItem, Paragraph, StatefulWidget as _};
+use rat_widget::{
+    list::List,
+    scrolled::{Scroll, ScrollArea, ScrollAreaState},
+    text::HasScreenCursor as _,
+    text_input::TextInput,
+};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style, Stylize as _},
+    symbols::border,
+    text::{Line, Span},
+    widgets::{Block, ListItem, Paragraph, StatefulWidget as _},
+};
 
-use crate::app::App;
-use crate::search::CONTEXT_LINES;
-use crate::types::{FileMatches, MatchMode, Pane};
+use crate::{
+    app::App,
+    search::CONTEXT_LINES,
+    types::{FileMatches, MatchMode, Pane},
+};
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
-    // Main layout: content area + status bar
+    // main layout: content area + status bar
     let [content_area, status_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
-    // Split content into left and right columns
+    // split content into left and right columns
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).areas(content_area);
 
-    // Left column: input area + file list
+    // left column: input area + file list
     let [input_area, file_area] =
         Layout::vertical([Constraint::Length(6), Constraint::Fill(1)]).areas(left);
 

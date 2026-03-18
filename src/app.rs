@@ -162,13 +162,14 @@ impl App {
     fn dispatch_search(&mut self) {
         self.results.clear();
         self.status_message = None;
-        self.searching = true;
+        self.cancelled.store(true, Ordering::Relaxed); // cancel any ongoing search
+        self.generation += 1;
         let pattern = self.search_input.text();
         if pattern.is_empty() {
+            self.searching = false;
             return;
         }
-        self.generation += 1;
-        self.cancelled.store(true, Ordering::Relaxed); // cancel any ongoing search
+        self.searching = true;
         self.file_list.select(Some(0));
         self.selected_match = 0;
         self.preview_scroll.clear();
