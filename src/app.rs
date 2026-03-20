@@ -45,6 +45,7 @@ pub struct App {
     pub preview_scroll: ScrollState,
     pub status_message: Option<String>,
     pub searching: bool,
+    pub truncated: bool,
     pub spinner: SpinnerState,
     exit: bool,
     generation: u64,
@@ -77,6 +78,7 @@ impl App {
             preview_scroll: ScrollState::new(),
             status_message: None,
             searching: false,
+            truncated: false,
             spinner: SpinnerState::default(),
             exit: false,
             generation: 0,
@@ -127,9 +129,18 @@ impl App {
                 {
                     self.results.push(file_matches);
                 }
-                SearchResult::Complete(generation) if generation == self.generation => {
+                SearchResult::Complete(generation, truncated)
+                    if generation == self.generation =>
+                {
                     self.results.sort_by(|a, b| a.path.cmp(&b.path));
                     self.searching = false;
+                    self.truncated = truncated;
+                    if truncated {
+                        let total: usize =
+                            self.results.iter().map(|fm| fm.matches.len()).sum();
+                        self.status_message =
+                            Some(format!("Results capped at {total} matches"));
+                    }
                 }
                 SearchResult::Error(generation, msg) if generation == self.generation => {
                     self.status_message = Some(msg);
@@ -138,7 +149,7 @@ impl App {
                 }
                 SearchResult::FileMatches(..)
                 | SearchResult::Complete(..)
-                | SearchResult::Error(..) => {} // ignore stale results
+                | SearchResult::Error(..) => {}
             }
         }
     }
@@ -163,6 +174,7 @@ impl App {
     fn dispatch_search(&mut self) {
         self.results.clear();
         self.status_message = None;
+        self.truncated = false;
         self.search_input.set_invalid(false);
         self.cancelled.store(true, Ordering::Relaxed); // cancel any ongoing search
         self.generation += 1;

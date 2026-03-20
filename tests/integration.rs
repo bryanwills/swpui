@@ -1,9 +1,12 @@
 #![expect(clippy::unwrap_used)]
 
-use std::io::Write as _;
-use swpui::replace::{apply_replacements, hash_file, is_file_stale, write_file};
-use swpui::search::find_matches_in_content;
-use swpui::types::MatchMode;
+use std::{io::Write as _, sync::atomic::AtomicUsize};
+
+use swpui::{
+    replace::{apply_replacements, hash_file, is_file_stale, write_file},
+    search::find_matches_in_content,
+    types::MatchMode,
+};
 
 fn create_test_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::TempDir::new().unwrap();
@@ -25,7 +28,14 @@ fn full_search_and_replace_workflow() {
     let content = std::fs::read_to_string(&path).unwrap();
 
     // Search
-    let matches = find_matches_in_content(&content, "hello", MatchMode::Literal).unwrap();
+    let matches = find_matches_in_content(
+        &content,
+        "hello",
+        MatchMode::Literal,
+        &AtomicUsize::new(0),
+        usize::MAX,
+    )
+    .unwrap();
     assert_eq!(matches.len(), 2);
 
     // Apply replacements
@@ -55,7 +65,14 @@ fn stale_file_prevents_write() {
 #[test]
 fn regex_search_and_replace() {
     let content = "foo123 bar456 foo789\n";
-    let matches = find_matches_in_content(content, r"foo\d+", MatchMode::Regex).unwrap();
+    let matches = find_matches_in_content(
+        content,
+        r"foo\d+",
+        MatchMode::Regex,
+        &AtomicUsize::new(0),
+        usize::MAX,
+    )
+    .unwrap();
     assert_eq!(matches.len(), 2);
     let new_content = apply_replacements(content, &matches, "replaced");
     assert_eq!(new_content, "replaced bar456 replaced\n");
@@ -64,7 +81,14 @@ fn regex_search_and_replace() {
 #[test]
 fn skip_preserves_matches() {
     let content = "aaa bbb aaa\n";
-    let mut matches = find_matches_in_content(content, "aaa", MatchMode::Literal).unwrap();
+    let mut matches = find_matches_in_content(
+        content,
+        "aaa",
+        MatchMode::Literal,
+        &AtomicUsize::new(0),
+        usize::MAX,
+    )
+    .unwrap();
     assert_eq!(matches.len(), 2);
 
     // Skip the first match

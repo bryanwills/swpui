@@ -59,7 +59,7 @@ pub struct SearchRequest {
 
 pub enum SearchResult {
     FileMatches(u64, FileMatches),
-    Complete(u64),
+    Complete(u64, bool),
     Error(u64, String),
 }
 

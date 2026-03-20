@@ -3,10 +3,12 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender},
     },
 };
+
+pub const MAX_MATCHES: usize = 100_000;
 
 use ignore::{WalkBuilder, WalkState};
 
@@ -15,28 +17,18 @@ use crate::{
     types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult},
 };
 
-pub const CONTEXT_LINES: usize = 3;
+pub const CONTEXT_LINES: usize = 2;
 
 pub fn find_matches_in_content(
     content: &str,
     pattern: &str,
     mode: MatchMode,
+    match_count: &AtomicUsize,
+    max_matches: usize,
 ) -> anyhow::Result<Vec<MatchInfo>> {
-    if pattern.is_empty() {
+    if pattern.is_empty() || match_count.load(Ordering::Relaxed) >= max_matches {
         return Ok(Vec::new());
     }
-
-    let byte_ranges: Vec<(usize, usize)> = match mode {
-        MatchMode::Literal => memchr::memmem::find_iter(content.as_bytes(), pattern.as_bytes())
-            .map(|pos| (pos, pos + pattern.len()))
-            .collect(),
-        MatchMode::Regex => {
-            let re = regex::Regex::new(pattern)?;
-            re.find_iter(content)
-                .map(|m| (m.start(), m.end()))
-                .collect()
-        }
-    };
 
     let mut line_starts: Vec<usize> = std::iter::once(0)
         .chain(memchr::memchr_iter(b'\n', content.as_bytes()).map(|i| i + 1))
@@ -53,9 +45,25 @@ pub fn find_matches_in_content(
         content[start..end].trim_end_matches('\n')
     };
 
-    let mut matches = Vec::with_capacity(byte_ranges.len());
+    let byte_ranges: Vec<(usize, usize)> = match mode {
+        MatchMode::Literal => memchr::memmem::find_iter(content.as_bytes(), pattern.as_bytes())
+            .map(|pos| (pos, pos + pattern.len()))
+            .collect(),
+        MatchMode::Regex => {
+            let re = regex::Regex::new(pattern)?;
+            re.find_iter(content)
+                .map(|m| (m.start(), m.end()))
+                .collect()
+        }
+    };
+
+    let mut matches = Vec::new();
     let mut line_idx = 0;
     for (byte_start, byte_end) in byte_ranges {
+        if match_count.load(Ordering::Relaxed) >= max_matches {
+            break;
+        }
+
         while line_starts
             .get(line_idx + 1)
             .is_some_and(|&offset| offset <= byte_start)
@@ -96,6 +104,7 @@ pub fn find_matches_in_content(
             context_after,
             skip: false,
         });
+        match_count.fetch_add(1, Ordering::Relaxed);
     }
 
     Ok(matches)
@@ -154,10 +163,14 @@ impl SearchWorker {
             .build_parallel();
         let cancelled = &self.cancelled;
         let result_tx = &self.result_tx;
+        let match_count = &AtomicUsize::new(0);
         walker.run(|| {
             let result_tx = result_tx.clone();
             Box::new(move |entry| {
                 if cancelled.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
+                if match_count.load(Ordering::Relaxed) >= MAX_MATCHES {
                     return WalkState::Quit;
                 }
 
@@ -173,8 +186,13 @@ impl SearchWorker {
                     return WalkState::Continue;
                 };
 
-                let Ok(matches) = find_matches_in_content(&content, &request.pattern, request.mode)
-                else {
+                let Ok(matches) = find_matches_in_content(
+                    &content,
+                    &request.pattern,
+                    request.mode,
+                    match_count,
+                    MAX_MATCHES,
+                ) else {
                     return WalkState::Continue;
                 };
 
@@ -198,9 +216,10 @@ impl SearchWorker {
                 WalkState::Continue
             })
         });
+        let truncated = match_count.load(Ordering::Relaxed) >= MAX_MATCHES;
         let _ = self
             .result_tx
-            .send(SearchResult::Complete(request.generation));
+            .send(SearchResult::Complete(request.generation, truncated));
     }
 }
 
@@ -227,7 +246,14 @@ mod tests {
     #[test]
     fn literal_search_finds_matches() {
         let content = "line one\nfoo bar\nline three\nfoo again\n";
-        let matches = find_matches_in_content(content, "foo", MatchMode::Literal).unwrap();
+        let matches = find_matches_in_content(
+            content,
+            "foo",
+            MatchMode::Literal,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].line_number, 2);
         assert_eq!(matches[0].matched_text, "foo");
@@ -237,7 +263,14 @@ mod tests {
     #[test]
     fn regex_search_finds_matches() {
         let content = "hello world\nhello rust\ngoodbye\n";
-        let matches = find_matches_in_content(content, r"hello \w+", MatchMode::Regex).unwrap();
+        let matches = find_matches_in_content(
+            content,
+            r"hello \w+",
+            MatchMode::Regex,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].matched_text, "hello world");
         assert_eq!(matches[1].matched_text, "hello rust");
@@ -246,54 +279,93 @@ mod tests {
     #[test]
     fn context_lines_are_captured() {
         let content = "a\nb\nc\nmatch\nd\ne\nf\n";
-        let matches = find_matches_in_content(content, "match", MatchMode::Literal).unwrap();
+        let matches = find_matches_in_content(
+            content,
+            "match",
+            MatchMode::Literal,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(matches.len(), 1);
         let m = &matches[0];
         assert_eq!(m.line_number, 4);
-        assert_eq!(m.context_before.len(), 3);
-        assert_eq!(m.context_before[0].content, "a");
-        assert_eq!(m.context_before[1].content, "b");
-        assert_eq!(m.context_before[2].content, "c");
-        assert_eq!(m.context_after.len(), 3);
+        assert_eq!(m.context_before.len(), CONTEXT_LINES);
+        assert_eq!(m.context_before[0].content, "b");
+        assert_eq!(m.context_before[1].content, "c");
+        assert_eq!(m.context_after.len(), CONTEXT_LINES);
         assert_eq!(m.context_after[0].content, "d");
         assert_eq!(m.context_after[1].content, "e");
-        assert_eq!(m.context_after[2].content, "f");
     }
 
     #[test]
     fn context_lines_at_file_start() {
         let content = "match\na\nb\nc\n";
-        let matches = find_matches_in_content(content, "match", MatchMode::Literal).unwrap();
+        let matches = find_matches_in_content(
+            content,
+            "match",
+            MatchMode::Literal,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(matches[0].context_before.len(), 0);
-        assert_eq!(matches[0].context_after.len(), 3);
+        assert_eq!(matches[0].context_after.len(), CONTEXT_LINES);
     }
 
     #[test]
     fn context_lines_at_file_end() {
         let content = "a\nb\nc\nmatch\n";
-        let matches = find_matches_in_content(content, "match", MatchMode::Literal).unwrap();
-        assert_eq!(matches[0].context_before.len(), 3);
+        let matches = find_matches_in_content(
+            content,
+            "match",
+            MatchMode::Literal,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(matches[0].context_before.len(), CONTEXT_LINES);
         assert_eq!(matches[0].context_after.len(), 0);
     }
 
     #[test]
     fn empty_pattern_returns_no_matches() {
         let content = "hello world\n";
-        let matches = find_matches_in_content(content, "", MatchMode::Literal).unwrap();
+        let matches = find_matches_in_content(
+            content,
+            "",
+            MatchMode::Literal,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
         assert!(matches.is_empty());
     }
 
     #[test]
     fn invalid_regex_returns_error() {
         let content = "hello\n";
-        let result = find_matches_in_content(content, "[invalid", MatchMode::Regex);
+        let result = find_matches_in_content(
+            content,
+            "[invalid",
+            MatchMode::Regex,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn byte_offsets_are_correct() {
         let content = "hello foo world\n";
-        let matches = find_matches_in_content(content, "foo", MatchMode::Literal).unwrap();
+        let matches = find_matches_in_content(
+            content,
+            "foo",
+            MatchMode::Literal,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(matches[0].byte_offset_start, 6);
         assert_eq!(matches[0].byte_offset_end, 9);
     }
@@ -323,7 +395,7 @@ mod tests {
                     assert_eq!(fm.matches.len(), 2);
                     got_file = true;
                 }
-                SearchResult::Complete(generation) => {
+                SearchResult::Complete(generation, _) => {
                     assert_eq!(generation, 1);
                     break;
                 }
@@ -377,7 +449,7 @@ mod tests {
         let mut got_gen2_complete = false;
         loop {
             match result_rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(SearchResult::Complete(2)) => {
+                Ok(SearchResult::Complete(2, _)) => {
                     got_gen2_complete = true;
                     break;
                 }

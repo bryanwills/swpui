@@ -103,14 +103,20 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
+    let truncated = if app.truncated {
+        " - limit reached"
+    } else {
+        ""
+    };
     let title = if app.searching {
         format!(
-            "{} Files ({} matched)",
+            "{} Files ({}{} matched)",
             app.spinner.frame(),
-            app.results.len()
+            app.results.len(),
+            truncated,
         )
     } else {
-        format!("Files ({} matched)", app.results.len())
+        format!("Files ({} matched{})", app.results.len(), truncated)
     };
     let border_style = focused_border_style(Pane::FileList, app.focused_pane);
     let block = Block::bordered()
