@@ -4,3 +4,4 @@ pub mod search;
 pub mod spinner;
 pub mod types;
 pub mod ui;
+pub mod utils;

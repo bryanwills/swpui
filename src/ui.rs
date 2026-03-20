@@ -19,6 +19,7 @@ use crate::{
     app::App,
     search::CONTEXT_LINES,
     types::{FileMatches, MatchMode, Pane},
+    utils::format_file_entry,
 };
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -135,7 +136,7 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let selected = app.file_list.selected();
-    let compact = app.focused_pane == Pane::Preview;
+    let inner_width = block.inner(area).width as usize;
     let items: Vec<ListItem> = app
         .results
         .iter()
@@ -144,15 +145,8 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
             let active = fm.active_match_count();
             let total = fm.matches.len();
             let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
-            let name = if compact {
-                rel.file_name().map_or_else(
-                    || rel.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                )
-            } else {
-                rel.display().to_string()
-            };
-            let label = format!("{name} ({active}/{total})");
+            let suffix = format!(" ({active}/{total})");
+            let label = format_file_entry(rel, &suffix, inner_width);
             if Some(i) != selected && active == 0 {
                 ListItem::new(Line::styled(label, Style::default().fg(Color::DarkGray)))
             } else {
