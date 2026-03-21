@@ -332,11 +332,22 @@ fn build_preview_lines<'a>(
 fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let border_style = focused_border_style(Pane::Preview, app.focused_pane);
 
+    let title_max = area.width.saturating_sub(2) as usize; // border chars
     let title = app.results.get(app.selected_file()).map_or_else(
         || "Preview".to_string(),
         |fm| {
             let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
-            format!("Preview: {}", rel.display())
+            let path_str = rel.display().to_string();
+            let prefix = "Preview: ";
+            let full = format!("{prefix}{path_str}");
+            if full.len() <= title_max {
+                full
+            } else {
+                // truncate path from the left with ellipsis
+                let avail = title_max.saturating_sub(prefix.len() + 1); // 1 for ellipsis
+                let start = path_str.len().saturating_sub(avail);
+                format!("{prefix}\u{2026}{}", &path_str[start..])
+            }
         },
     );
 
