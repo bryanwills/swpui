@@ -19,7 +19,7 @@ use crate::{
     app::App,
     search::CONTEXT_LINES,
     types::{FileMatches, MatchMode, Pane},
-    utils::format_file_entry,
+    utils::{format_file_entry, truncate_match_line},
 };
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -174,6 +174,98 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
         .render(area, frame.buffer_mut(), &mut app.file_list);
 }
 
+fn build_match_line<'a>(
+    m: &'a crate::types::MatchInfo,
+    replacement: &'a str,
+    inner_width: u16,
+) -> Line<'a> {
+    let before_match = &m.line_content[..m.match_col_start];
+    let after_match = &m.line_content[m.match_col_end..];
+    let dark_gray = Style::default().fg(Color::DarkGray);
+
+    if m.skip {
+        let t = truncate_match_line(
+            before_match,
+            &m.matched_text,
+            None,
+            after_match,
+            inner_width as usize,
+        );
+        let mut spans = Vec::with_capacity(7);
+        spans.push(Span::raw(" "));
+        if t.left_ellipsis {
+            spans.push(Span::styled("\u{2026}", dark_gray));
+        }
+        spans.push(Span::styled(t.before, dark_gray));
+        spans.push(Span::styled(
+            t.matched,
+            dark_gray.add_modifier(Modifier::CROSSED_OUT),
+        ));
+        spans.push(Span::styled(t.after, dark_gray));
+        if t.right_ellipsis {
+            spans.push(Span::styled("\u{2026}", dark_gray));
+        }
+        spans.push(Span::styled(" [skipped]", dark_gray));
+        Line::from(spans)
+    } else if !replacement.is_empty() {
+        let t = truncate_match_line(
+            before_match,
+            &m.matched_text,
+            Some(replacement),
+            after_match,
+            inner_width as usize,
+        );
+        let mut spans = Vec::with_capacity(7);
+        spans.push(Span::raw(" "));
+        if t.left_ellipsis {
+            spans.push(Span::raw("\u{2026}"));
+        }
+        spans.push(Span::raw(t.before));
+        spans.push(Span::styled(
+            t.matched,
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::CROSSED_OUT),
+        ));
+        if let Some(repl) = t.replacement {
+            spans.push(Span::styled(
+                repl,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.push(Span::raw(t.after));
+        if t.right_ellipsis {
+            spans.push(Span::raw("\u{2026}"));
+        }
+        Line::from(spans)
+    } else {
+        let t = truncate_match_line(
+            before_match,
+            &m.matched_text,
+            None,
+            after_match,
+            inner_width as usize,
+        );
+        let mut spans = Vec::with_capacity(5);
+        spans.push(Span::raw(" "));
+        if t.left_ellipsis {
+            spans.push(Span::raw("\u{2026}"));
+        }
+        spans.push(Span::raw(t.before));
+        spans.push(Span::styled(
+            t.matched,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(t.after));
+        if t.right_ellipsis {
+            spans.push(Span::raw("\u{2026}"));
+        }
+        Line::from(spans)
+    }
+}
+
 fn build_preview_lines<'a>(
     fm: &'a FileMatches,
     replacement: &'a str,
@@ -219,52 +311,7 @@ fn build_preview_lines<'a>(
             )));
         }
 
-        // The match line itself: show full line with the matched portion highlighted
-        let before_match = &m.line_content[..m.match_col_start];
-        let after_match = &m.line_content[m.match_col_end..];
-
-        if m.skip {
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(before_match, Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    &m.matched_text,
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::CROSSED_OUT),
-                ),
-                Span::styled(after_match, Style::default().fg(Color::DarkGray)),
-                Span::styled(" [skipped]", Style::default().fg(Color::DarkGray)),
-            ]));
-        } else if !replacement.is_empty() {
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::raw(before_match),
-                Span::styled(
-                    &m.matched_text,
-                    Style::default()
-                        .fg(Color::Red)
-                        .add_modifier(Modifier::CROSSED_OUT),
-                ),
-                Span::styled(
-                    replacement,
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(after_match),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::raw(before_match),
-                Span::styled(
-                    &m.matched_text,
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(after_match),
-            ]));
-        }
+        lines.push(build_match_line(m, replacement, inner_width));
 
         // Context after
         for ctx in &m.context_after {
