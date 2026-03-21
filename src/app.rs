@@ -33,6 +33,7 @@ use crate::{
 const DEBOUNCE: Duration = Duration::from_millis(100);
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 
+#[expect(clippy::struct_excessive_bools)]
 pub struct App {
     pub root: PathBuf,
     pub search_input: TextInputState,
