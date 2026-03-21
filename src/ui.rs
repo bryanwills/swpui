@@ -67,6 +67,7 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
         Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(area);
 
     let mode_label = match app.match_mode {
+        MatchMode::CaseAware => "Search (case-aware)".to_string(),
         MatchMode::Literal => "Search (literal)".to_string(),
         MatchMode::Regex => "Search (regex)".to_string(),
     };
@@ -424,7 +425,8 @@ fn render_confirm_modal(frame: &mut Frame, area: Rect) {
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
     frame.render_widget(
-        Paragraph::new("Apply all replacements?\ny / n").alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new("Apply all replacements?\ny / n")
+            .alignment(ratatui::layout::Alignment::Center),
         inner,
     );
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MatchMode {
     #[default]
+    CaseAware,
     Literal,
     Regex,
 }
@@ -11,8 +12,9 @@ impl MatchMode {
     #[must_use]
     pub fn toggle(self) -> Self {
         match self {
+            Self::CaseAware => Self::Literal,
             Self::Literal => Self::Regex,
-            Self::Regex => Self::Literal,
+            Self::Regex => Self::CaseAware,
         }
     }
 }
@@ -104,17 +106,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn match_mode_default_is_literal() {
-        assert_eq!(MatchMode::default(), MatchMode::Literal);
-    }
-
-    #[test]
     fn match_mode_toggle() {
-        let mut mode = MatchMode::Literal;
+        let mut mode = MatchMode::CaseAware;
+        mode = mode.toggle();
+        assert_eq!(mode, MatchMode::Literal);
         mode = mode.toggle();
         assert_eq!(mode, MatchMode::Regex);
         mode = mode.toggle();
-        assert_eq!(mode, MatchMode::Literal);
+        assert_eq!(mode, MatchMode::CaseAware);
     }
 
     #[test]

@@ -46,6 +46,14 @@ pub fn find_matches_in_content(
     };
 
     let byte_ranges: Vec<(usize, usize)> = match mode {
+        MatchMode::CaseAware => {
+            let re = regex::RegexBuilder::new(&regex::escape(pattern))
+                .case_insensitive(true)
+                .build()?;
+            re.find_iter(content)
+                .map(|m| (m.start(), m.end()))
+                .collect()
+        }
         MatchMode::Literal => memchr::memmem::find_iter(content.as_bytes(), pattern.as_bytes())
             .map(|pos| (pos, pos + pattern.len()))
             .collect(),
