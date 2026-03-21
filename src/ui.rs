@@ -437,13 +437,13 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     } else {
         let hints = match app.focused_pane {
             Pane::SearchInput | Pane::ReplaceInput => {
-                "ctrl-r: toggle regex | esc: file list | tab/shift-tab: cycle | q/ctrl-c: quit"
+                "ctrl-r: mode | esc: file list | tab/shift-tab: cycle | q/ctrl-c: quit"
             }
             Pane::FileList => {
                 "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/shift-tab: cycle | q/ctrl-c: quit"
             }
             Pane::Preview => {
-                "space: toggle skip | enter: apply match | s: skip file | a: apply all | j/k: navigate | h/esc: back | tab/shift-tab: cycle | q/ctrl-c: quit"
+                "space: skip | enter: apply match | s: skip file | f: apply file | j/k: navigate | h/esc: back | tab/shift-tab: cycle | q/ctrl-c: quit"
             }
         };
         Line::from(hints.blue())

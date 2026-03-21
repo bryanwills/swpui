@@ -260,7 +260,6 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('s') => self.toggle_skip_file(),
-            KeyCode::Char('a') if !self.results.is_empty() => self.confirm_apply_all = true,
             KeyCode::Char('f') => self.apply_file(),
             _ => {}
         }
@@ -268,6 +267,10 @@ impl App {
 
     fn handle_file_list_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('a') if !self.results.is_empty() => {
+                self.confirm_apply_all = true;
+                return;
+            }
             KeyCode::Char('j') | KeyCode::Down if !self.results.is_empty() => {
                 let next = (self.selected_file() + 1).min(self.results.len() - 1);
                 self.file_list.select(Some(next));
