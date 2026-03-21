@@ -129,17 +129,13 @@ impl App {
                 {
                     self.results.push(file_matches);
                 }
-                SearchResult::Complete(generation, truncated)
-                    if generation == self.generation =>
-                {
+                SearchResult::Complete(generation, truncated) if generation == self.generation => {
                     self.results.sort_by(|a, b| a.path.cmp(&b.path));
                     self.searching = false;
                     self.truncated = truncated;
                     if truncated {
-                        let total: usize =
-                            self.results.iter().map(|fm| fm.matches.len()).sum();
-                        self.status_message =
-                            Some(format!("Results capped at {total} matches"));
+                        let total: usize = self.results.iter().map(|fm| fm.matches.len()).sum();
+                        self.status_message = Some(format!("Results capped at {total} matches"));
                     }
                 }
                 SearchResult::Error(generation, msg) if generation == self.generation => {

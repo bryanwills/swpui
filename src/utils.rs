@@ -148,23 +148,22 @@ pub fn truncate_match_line<'a>(
         let remaining = budget - center_w;
 
         // if only one side overflows, give the other its full width
-        let (before_budget, after_budget) =
-            if before_w + after_w <= remaining {
-                // both fit (shouldn't reach here due to step 1, but handle gracefully)
-                (before_w, after_w)
-            } else if before_w <= remaining && after_w <= remaining {
-                // both fit individually but not together: split equally
-                (remaining.div_ceil(2), remaining / 2)
-            } else if before_w <= remaining {
-                // only before fits individually
-                (before_w, remaining - before_w)
-            } else if after_w <= remaining {
-                // only after fits individually
-                (remaining - after_w, after_w)
-            } else {
-                // neither fits individually: split equally
-                (remaining.div_ceil(2), remaining / 2)
-            };
+        let (before_budget, after_budget) = if before_w + after_w <= remaining {
+            // both fit (shouldn't reach here due to step 1, but handle gracefully)
+            (before_w, after_w)
+        } else if before_w <= remaining && after_w <= remaining {
+            // both fit individually but not together: split equally
+            (remaining.div_ceil(2), remaining / 2)
+        } else if before_w <= remaining {
+            // only before fits individually
+            (before_w, remaining - before_w)
+        } else if after_w <= remaining {
+            // only after fits individually
+            (remaining - after_w, after_w)
+        } else {
+            // neither fits individually: split equally
+            (remaining.div_ceil(2), remaining / 2)
+        };
 
         let (trimmed_before, left_ellipsis) = trim_start_to_width(before, before_budget);
         let (trimmed_after, right_ellipsis) = trim_end_to_width(after, after_budget);
@@ -183,26 +182,21 @@ pub fn truncate_match_line<'a>(
     let left_ellipsis = true;
     let avail = budget.saturating_sub(1); // reserve 1 col for left ellipsis
 
-    let (visible_matched, visible_replacement, right_ellipsis) =
-        if let Some(repl) = replacement {
-            let repl_w = repl.width();
-            if repl_w <= avail {
-                // replacement fits, give remaining to match (from the right end)
-                let match_avail = avail - repl_w;
-                (slice_end(matched, match_avail), Some(repl), false)
-            } else {
-                // replacement overflows: truncate from the right, no room for match
-                let repl_avail = avail.saturating_sub(1); // reserve 1 col for right ellipsis
-                (
-                    "",
-                    Some(slice_start(repl, repl_avail)),
-                    true,
-                )
-            }
+    let (visible_matched, visible_replacement, right_ellipsis) = if let Some(repl) = replacement {
+        let repl_w = repl.width();
+        if repl_w <= avail {
+            // replacement fits, give remaining to match (from the right end)
+            let match_avail = avail - repl_w;
+            (slice_end(matched, match_avail), Some(repl), false)
         } else {
-            // truncate match from the right end (no replacement)
-            (slice_end(matched, avail), None, false)
-        };
+            // replacement overflows: truncate from the right, no room for match
+            let repl_avail = avail.saturating_sub(1); // reserve 1 col for right ellipsis
+            ("", Some(slice_start(repl, repl_avail)), true)
+        }
+    } else {
+        // truncate match from the right end (no replacement)
+        (slice_end(matched, avail), None, false)
+    };
 
     TruncatedLine {
         before: "",
@@ -311,10 +305,7 @@ fn trim_end_to_width(s: &str, max_cols: usize) -> (&str, bool) {
     }
     let target = max_cols.saturating_sub(1); // reserve 1 col for ellipsis
     let (char_count, _) = chars_within_width(s.chars(), target);
-    let byte_end = s
-        .char_indices()
-        .nth(char_count)
-        .map_or(s.len(), |(i, _)| i);
+    let byte_end = s.char_indices().nth(char_count).map_or(s.len(), |(i, _)| i);
     (&s[..byte_end], true)
 }
 
@@ -336,10 +327,7 @@ fn slice_end(s: &str, max_cols: usize) -> &str {
 /// Take up to `max_cols` display columns from the start of a string (no ellipsis reservation).
 fn slice_start(s: &str, max_cols: usize) -> &str {
     let (char_count, _) = chars_within_width(s.chars(), max_cols);
-    let byte_end = s
-        .char_indices()
-        .nth(char_count)
-        .map_or(s.len(), |(i, _)| i);
+    let byte_end = s.char_indices().nth(char_count).map_or(s.len(), |(i, _)| i);
     &s[..byte_end]
 }
 
@@ -354,10 +342,19 @@ mod tests {
     }
 
     #[test]
-    fn dirs_abbreviated_to_two_chars() {
+    fn dirs_abbreviated_to_three_chars() {
         let path = Path::new("src/components/widgets/MyFile.rs");
         assert_eq!(
             format_file_entry(path, " (1/2)", 30),
+            "src/com/wid/MyFile.rs (1/2)"
+        );
+    }
+
+    #[test]
+    fn dirs_abbreviated_to_two_chars() {
+        let path = Path::new("src/components/widgets/MyFile.rs");
+        assert_eq!(
+            format_file_entry(path, " (1/2)", 26),
             "sr/co/wi/MyFile.rs (1/2)"
         );
     }
