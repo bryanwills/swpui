@@ -12,7 +12,7 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize as _},
     symbols::border,
     text::{Line, Span},
-    widgets::{Block, ListItem, Paragraph, StatefulWidget as _},
+    widgets::{Block, Clear, ListItem, Paragraph, StatefulWidget as _},
 };
 
 use crate::{
@@ -48,6 +48,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     render_file_list(app, frame, file_area);
     render_preview(app, frame, right);
     render_status_bar(app, frame, status_area);
+
+    if app.confirm_apply_all {
+        render_confirm_modal(frame, area);
+    }
 }
 
 fn focused_border_style(pane: Pane, current: Pane) -> Style {
@@ -256,7 +260,9 @@ fn build_match_line<'a>(
         spans.push(Span::raw(t.before));
         spans.push(Span::styled(
             t.matched,
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD | Modifier::CROSSED_OUT),
         ));
         spans.push(Span::raw(t.after));
         if t.right_ellipsis {
@@ -401,6 +407,26 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     #[expect(clippy::cast_possible_truncation)]
     let scroll_offset = (offset as u16, 0);
     frame.render_widget(Paragraph::new(lines).scroll(scroll_offset), inner);
+}
+
+fn render_confirm_modal(frame: &mut Frame, area: Rect) {
+    let width = 30u16.min(area.width);
+    let height = 4u16.min(area.height);
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let modal_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, modal_area);
+    let block = Block::bordered()
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title("Confirm");
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+    frame.render_widget(
+        Paragraph::new("Apply all replacements?\ny / n").alignment(ratatui::layout::Alignment::Center),
+        inner,
+    );
 }
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {

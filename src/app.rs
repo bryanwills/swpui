@@ -47,6 +47,7 @@ pub struct App {
     pub searching: bool,
     pub truncated: bool,
     pub spinner: SpinnerState,
+    pub confirm_apply_all: bool,
     exit: bool,
     generation: u64,
     last_keystroke: Option<Instant>,
@@ -80,6 +81,7 @@ impl App {
             searching: false,
             truncated: false,
             spinner: SpinnerState::default(),
+            confirm_apply_all: false,
             exit: false,
             generation: 0,
             last_keystroke: None,
@@ -191,6 +193,18 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Confirmation modal intercepts all keys
+        if self.confirm_apply_all {
+            match key.code {
+                KeyCode::Char('y') => {
+                    self.confirm_apply_all = false;
+                    self.apply_all();
+                }
+                _ => self.confirm_apply_all = false,
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit = true;
@@ -245,7 +259,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Char('s') => self.toggle_skip_file(),
-            KeyCode::Char('a') => self.apply_all(),
+            KeyCode::Char('a') if !self.results.is_empty() => self.confirm_apply_all = true,
             KeyCode::Char('f') => self.apply_file(),
             _ => {}
         }
