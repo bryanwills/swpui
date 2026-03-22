@@ -13,8 +13,8 @@ pub const MAX_MATCHES: usize = 100_000;
 use ignore::{WalkBuilder, WalkState};
 
 use crate::{
-    replace::hash_content,
     types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult},
+    utils::hash_content,
 };
 
 pub const CONTEXT_LINES: usize = 2;
@@ -232,7 +232,6 @@ impl SearchWorker {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::{io::Write as _, sync::mpsc, thread, time::Duration};

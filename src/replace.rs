@@ -1,13 +1,6 @@
-use std::{
-    borrow::Cow,
-    cmp::Reverse,
-    fs,
-    io::{BufReader, Read, Write as _},
-    path::Path,
-};
+use std::{borrow::Cow, cmp::Reverse, io::Write as _, path::Path};
 
 use convert_case::{Case, Casing as _};
-use sha2::{Digest as _, Sha256};
 
 use crate::types::{MatchInfo, MatchMode};
 
@@ -98,37 +91,15 @@ pub fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Hash the contents of a Reader with SHA256
-pub fn hash_content<R: Read>(content: &mut R) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    let mut buf = [0; 1024];
-    while let Ok(size) = content.read(&mut buf) {
-        if size == 0 {
-            break;
-        }
-        hasher.update(&buf[0..size]);
-    }
-    hasher.finalize().into()
-}
-
-pub fn hash_file(path: impl AsRef<Path>) -> anyhow::Result<[u8; 32]> {
-    let file = fs::File::open(path)?;
-    let mut reader = BufReader::new(file);
-    Ok(hash_content(&mut reader))
-}
-
-pub fn is_file_stale(path: impl AsRef<Path>, original_hash: [u8; 32]) -> anyhow::Result<bool> {
-    Ok(hash_file(path)? != original_hash)
-}
-
 /// Detect the case of a string by trying each case from least to most specific.
 fn detect_case(s: &str) -> Option<Case<'static>> {
     CASES.iter().copied().find(|&case| s == s.to_case(case))
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn make_match(start: usize, end: usize) -> MatchInfo {
@@ -219,29 +190,6 @@ mod tests {
         let result = write_file(&path, "replaced");
         assert!(result.is_ok());
         assert_eq!(fs::read_to_string(&path).unwrap(), "replaced");
-    }
-
-    #[test]
-    fn stale_file_detected() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("test.txt");
-        fs::write(&path, "original content").unwrap();
-        let hash = hash_file(&path).unwrap();
-
-        // Modify the file externally
-        fs::write(&path, "modified content").unwrap();
-
-        assert!(is_file_stale(&path, hash).unwrap());
-    }
-
-    #[test]
-    fn fresh_file_not_stale() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("test.txt");
-        fs::write(&path, "original content").unwrap();
-        let hash = hash_file(&path).unwrap();
-
-        assert!(!is_file_stale(&path, hash).unwrap());
     }
 
     #[test]

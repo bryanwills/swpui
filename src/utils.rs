@@ -1,5 +1,10 @@
-use std::path::{Component, Path};
+use std::{
+    fs,
+    io::{BufReader, Read},
+    path::{Component, Path},
+};
 
+use sha2::{Digest as _, Sha256};
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr};
 
 pub struct TruncatedLine<'a> {
@@ -206,6 +211,29 @@ pub fn truncate_match_line<'a>(
         left_ellipsis,
         right_ellipsis,
     }
+}
+
+/// Hash the contents of a Reader with SHA256
+pub fn hash_content<R: Read>(content: &mut R) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let mut buf = [0; 1024];
+    while let Ok(size) = content.read(&mut buf) {
+        if size == 0 {
+            break;
+        }
+        hasher.update(&buf[0..size]);
+    }
+    hasher.finalize().into()
+}
+
+pub fn hash_file(path: impl AsRef<Path>) -> anyhow::Result<[u8; 32]> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    Ok(hash_content(&mut reader))
+}
+
+pub fn is_file_stale(path: impl AsRef<Path>, original_hash: [u8; 32]) -> anyhow::Result<bool> {
+    Ok(hash_file(path)? != original_hash)
 }
 
 fn chars_within_width(chars: impl Iterator<Item = char>, max_cols: usize) -> (usize, usize) {
@@ -613,5 +641,28 @@ mod tests {
         assert_eq!(result.before, "");
         assert_eq!(result.matched, "CDE");
         assert_eq!(result.after, "");
+    }
+
+    #[test]
+    fn stale_file_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "original content").unwrap();
+        let hash = hash_file(&path).unwrap();
+
+        // Modify the file externally
+        fs::write(&path, "modified content").unwrap();
+
+        assert!(is_file_stale(&path, hash).unwrap());
+    }
+
+    #[test]
+    fn fresh_file_not_stale() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "original content").unwrap();
+        let hash = hash_file(&path).unwrap();
+
+        assert!(!is_file_stale(&path, hash).unwrap());
     }
 }

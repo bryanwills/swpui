@@ -27,7 +27,7 @@ use crate::{
     search::SearchWorker,
     spinner::SpinnerState,
     types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult},
-    ui,
+    ui, utils,
 };
 
 const DEBOUNCE: Duration = Duration::from_millis(100);
@@ -426,7 +426,7 @@ impl App {
     }
 
     fn apply_to_file(fm: &FileMatches, replacement: &str, mode: MatchMode) -> anyhow::Result<()> {
-        if replace::is_file_stale(&fm.path, fm.content_hash)? {
+        if utils::is_file_stale(&fm.path, fm.content_hash)? {
             anyhow::bail!("file modified externally, skipping");
         }
         let content = fs::read_to_string(&fm.path)?;
