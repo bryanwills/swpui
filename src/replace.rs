@@ -1,16 +1,67 @@
 use std::{
+    borrow::Cow,
     cmp::Reverse,
     fs,
     io::{BufReader, Read, Write as _},
     path::Path,
 };
 
+use convert_case::{Case, Casing as _};
 use sha2::{Digest as _, Sha256};
 
-use crate::types::MatchInfo;
+use crate::types::{MatchInfo, MatchMode};
+
+/// Cases to detect, ordered from least specific to most specific.
+const CASES: [Case<'static>; 6] = [
+    Case::Flat,
+    Case::Snake,
+    Case::Camel,
+    Case::Kebab,
+    Case::Pascal,
+    Case::UpperSnake,
+];
+
+/// Adjust replacement text according to casing.
+#[must_use]
+pub fn case_aware_replacement<'a>(matched_text: &str, replacement: &'a str) -> Cow<'a, str> {
+    if matched_text.is_empty() || replacement.is_empty() {
+        return Cow::Borrowed(replacement);
+    }
+
+    let Some(matched_case) = detect_case(matched_text) else {
+        return Cow::Borrowed(replacement);
+    };
+
+    // detect the replacement's case so that convert_case parses word boundaries correctly
+    // before converting to the matched case
+    let repl_case = detect_case(replacement);
+
+    // if the matched text is `Flat` but the replacement is in a more specific lowercase case
+    // (snake, kebab, camel), respect the replacement's case as-is
+    if matched_case == Case::Flat
+        && repl_case.is_some_and(|c| matches!(c, Case::Snake | Case::Kebab | Case::Camel))
+    {
+        return Cow::Borrowed(replacement);
+    }
+
+    let converted = if let Some(from_case) = repl_case {
+        replacement.from_case(from_case).to_case(matched_case)
+    } else {
+        replacement.to_case(matched_case)
+    };
+    if converted == replacement {
+        return Cow::Borrowed(replacement);
+    }
+    Cow::Owned(converted)
+}
 
 #[must_use]
-pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &str) -> String {
+pub fn apply_replacements(
+    content: &str,
+    matches: &[MatchInfo],
+    replacement: &str,
+    mode: MatchMode,
+) -> String {
     let mut active: Vec<&MatchInfo> = matches.iter().filter(|m| !m.skip).collect();
     let mut result = content.to_string();
     if active.is_empty() {
@@ -21,7 +72,12 @@ pub fn apply_replacements(content: &str, matches: &[MatchInfo], replacement: &st
     active.sort_unstable_by_key(|m| Reverse(m.byte_offset_start));
 
     for m in active {
-        result.replace_range(m.byte_offset_start..m.byte_offset_end, replacement);
+        let repl = if mode == MatchMode::CaseAware {
+            case_aware_replacement(&m.matched_text, replacement)
+        } else {
+            Cow::Borrowed(replacement)
+        };
+        result.replace_range(m.byte_offset_start..m.byte_offset_end, &repl);
     }
     result
 }
@@ -65,6 +121,11 @@ pub fn is_file_stale(path: impl AsRef<Path>, original_hash: [u8; 32]) -> anyhow:
     Ok(hash_file(path)? != original_hash)
 }
 
+/// Detect the case of a string by trying each case from least to most specific.
+fn detect_case(s: &str) -> Option<Case<'static>> {
+    CASES.iter().copied().find(|&case| s == s.to_case(case))
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {
@@ -96,7 +157,7 @@ mod tests {
     fn apply_single_replacement() {
         let content = "hello world";
         let matches = vec![make_match(6, 11)];
-        let result = apply_replacements(content, &matches, "rust");
+        let result = apply_replacements(content, &matches, "rust", MatchMode::Literal);
         assert_eq!(result, "hello rust");
     }
 
@@ -104,7 +165,7 @@ mod tests {
     fn apply_multiple_replacements() {
         let content = "foo bar foo baz foo";
         let matches = vec![make_match(0, 3), make_match(8, 11), make_match(16, 19)];
-        let result = apply_replacements(content, &matches, "qux");
+        let result = apply_replacements(content, &matches, "qux", MatchMode::Literal);
         assert_eq!(result, "qux bar qux baz qux");
     }
 
@@ -112,7 +173,7 @@ mod tests {
     fn skipped_matches_are_not_replaced() {
         let content = "foo bar foo";
         let matches = vec![make_match(0, 3), make_skipped_match(8, 11)];
-        let result = apply_replacements(content, &matches, "baz");
+        let result = apply_replacements(content, &matches, "baz", MatchMode::Literal);
         assert_eq!(result, "baz bar foo");
     }
 
@@ -120,7 +181,7 @@ mod tests {
     fn empty_replacement_deletes_text() {
         let content = "hello world";
         let matches = vec![make_match(5, 11)];
-        let result = apply_replacements(content, &matches, "");
+        let result = apply_replacements(content, &matches, "", MatchMode::Literal);
         assert_eq!(result, "hello");
     }
 
@@ -128,7 +189,7 @@ mod tests {
     fn no_active_matches_returns_original() {
         let content = "hello world";
         let matches = vec![make_skipped_match(0, 5)];
-        let result = apply_replacements(content, &matches, "bye");
+        let result = apply_replacements(content, &matches, "bye", MatchMode::Literal);
         assert_eq!(result, "hello world");
     }
 
@@ -181,5 +242,122 @@ mod tests {
         let hash = hash_file(&path).unwrap();
 
         assert!(!is_file_stale(&path, hash).unwrap());
+    }
+
+    #[test]
+    fn case_aware_snake_to_upper_snake() {
+        assert_eq!(
+            case_aware_replacement("FOO_BAR", "baz_qux").as_ref(),
+            "BAZ_QUX"
+        );
+    }
+
+    #[test]
+    fn case_aware_snake_to_kebab() {
+        assert_eq!(
+            case_aware_replacement("foo-bar", "baz_qux").as_ref(),
+            "baz-qux"
+        );
+    }
+
+    #[test]
+    fn case_aware_pascal_to_pascal() {
+        assert_eq!(
+            case_aware_replacement("FooBar", "BazQux").as_ref(),
+            "BazQux"
+        );
+    }
+
+    #[test]
+    fn case_aware_pascal_to_camel() {
+        assert_eq!(
+            case_aware_replacement("fooBar", "BazQux").as_ref(),
+            "bazQux"
+        );
+    }
+
+    #[test]
+    fn case_aware_flat_preserves_snake_replacement() {
+        assert_eq!(
+            case_aware_replacement("foobar", "baz_qux").as_ref(),
+            "baz_qux"
+        );
+        assert!(matches!(
+            case_aware_replacement("foobar", "baz_qux"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn case_aware_flat_to_flat() {
+        assert_eq!(
+            case_aware_replacement("foobar", "bazqux").as_ref(),
+            "bazqux"
+        );
+    }
+
+    #[test]
+    fn case_aware_flat_converts_pascal_replacement() {
+        assert_eq!(
+            case_aware_replacement("foobar", "BazQux").as_ref(),
+            "bazqux"
+        );
+    }
+
+    #[test]
+    fn case_aware_same_case_no_change() {
+        assert_eq!(
+            case_aware_replacement("foo_bar", "baz_qux").as_ref(),
+            "baz_qux"
+        );
+        assert!(matches!(
+            case_aware_replacement("foo_bar", "baz_qux"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn case_aware_empty_matched() {
+        assert_eq!(case_aware_replacement("", "bar").as_ref(), "bar");
+        assert!(matches!(
+            case_aware_replacement("", "bar"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn case_aware_empty_replacement() {
+        assert_eq!(case_aware_replacement("Foo", "").as_ref(), "");
+        assert!(matches!(
+            case_aware_replacement("Foo", ""),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn case_aware_single_word_pascal() {
+        assert_eq!(case_aware_replacement("Hello", "world").as_ref(), "World");
+    }
+
+    #[test]
+    fn case_aware_single_word_upper() {
+        assert_eq!(case_aware_replacement("HELLO", "world").as_ref(), "WORLD");
+    }
+
+    #[test]
+    fn case_aware_apply_replacements() {
+        let content = "Hello hello";
+        let matches = vec![
+            MatchInfo {
+                matched_text: "Hello".to_string(),
+                ..make_match(0, 5)
+            },
+            MatchInfo {
+                matched_text: "hello".to_string(),
+                ..make_match(6, 11)
+            },
+        ];
+        let result = apply_replacements(content, &matches, "world", MatchMode::CaseAware);
+        assert_eq!(result, "World world");
     }
 }

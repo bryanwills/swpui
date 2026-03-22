@@ -22,6 +22,7 @@ unwrap_used = "deny"
 
 [dependencies]
 anyhow = "1.0.102"
+convert_case = "0.11.0"
 ignore = "0.4.23"
 memchr = "2.7.4"
 rat-widget = "3.2.1"

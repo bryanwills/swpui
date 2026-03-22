@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path};
 
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr};
 
@@ -25,7 +25,7 @@ pub fn format_file_entry(rel: &Path, suffix: &str, max_width: usize) -> String {
     let mut dirs: Vec<String> = rel
         .components()
         .filter_map(|c| {
-            if let std::path::Component::Normal(s) = c {
+            if let Component::Normal(s) = c {
                 s.to_str().map(String::from)
             } else {
                 None

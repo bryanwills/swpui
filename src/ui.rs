@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use rat_widget::{
     list::List,
@@ -17,8 +17,9 @@ use ratatui::{
 
 use crate::{
     app::App,
+    replace::case_aware_replacement,
     search::CONTEXT_LINES,
-    types::{FileMatches, MatchMode, Pane},
+    types::{FileMatches, MatchInfo, MatchMode, Pane},
     utils::{format_file_entry, truncate_match_line},
 };
 
@@ -179,11 +180,7 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
         .render(area, frame.buffer_mut(), &mut app.file_list);
 }
 
-fn build_match_line<'a>(
-    m: &'a crate::types::MatchInfo,
-    replacement: &'a str,
-    inner_width: u16,
-) -> Line<'a> {
+fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<'static> {
     let before_match = &m.line_content[..m.match_col_start];
     let after_match = &m.line_content[m.match_col_end..];
     let dark_gray = Style::default().fg(Color::DarkGray);
@@ -201,12 +198,12 @@ fn build_match_line<'a>(
         if t.left_ellipsis {
             spans.push(Span::styled("\u{2026}", dark_gray));
         }
-        spans.push(Span::styled(t.before, dark_gray));
+        spans.push(Span::styled(t.before.to_string(), dark_gray));
         spans.push(Span::styled(
-            t.matched,
+            t.matched.to_string(),
             dark_gray.add_modifier(Modifier::CROSSED_OUT),
         ));
-        spans.push(Span::styled(t.after, dark_gray));
+        spans.push(Span::styled(t.after.to_string(), dark_gray));
         if t.right_ellipsis {
             spans.push(Span::styled("\u{2026}", dark_gray));
         }
@@ -225,22 +222,22 @@ fn build_match_line<'a>(
         if t.left_ellipsis {
             spans.push(Span::raw("\u{2026}"));
         }
-        spans.push(Span::raw(t.before));
+        spans.push(Span::raw(t.before.to_string()));
         spans.push(Span::styled(
-            t.matched,
+            t.matched.to_string(),
             Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::CROSSED_OUT),
         ));
         if let Some(repl) = t.replacement {
             spans.push(Span::styled(
-                repl,
+                repl.to_string(),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        spans.push(Span::raw(t.after));
+        spans.push(Span::raw(t.after.to_string()));
         if t.right_ellipsis {
             spans.push(Span::raw("\u{2026}"));
         }
@@ -258,14 +255,14 @@ fn build_match_line<'a>(
         if t.left_ellipsis {
             spans.push(Span::raw("\u{2026}"));
         }
-        spans.push(Span::raw(t.before));
+        spans.push(Span::raw(t.before.to_string()));
         spans.push(Span::styled(
-            t.matched,
+            t.matched.to_string(),
             Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::BOLD | Modifier::CROSSED_OUT),
         ));
-        spans.push(Span::raw(t.after));
+        spans.push(Span::raw(t.after.to_string()));
         if t.right_ellipsis {
             spans.push(Span::raw("\u{2026}"));
         }
@@ -273,14 +270,16 @@ fn build_match_line<'a>(
     }
 }
 
-fn build_preview_lines<'a>(
-    fm: &'a FileMatches,
-    replacement: &'a str,
+fn build_preview_lines(
+    fm: &FileMatches,
+    replacement: &str,
+    mode: MatchMode,
     is_preview_focused: bool,
     selected_match: usize,
     inner_width: u16,
-) -> (Vec<Line<'a>>, Range<usize>) {
-    let mut lines: Vec<Line> = Vec::with_capacity(fm.matches.len() * CONTEXT_LINES * 2 + 3);
+) -> (Vec<Line<'static>>, Range<usize>) {
+    let mut lines: Vec<Line<'static>> =
+        Vec::with_capacity(fm.matches.len() * CONTEXT_LINES * 2 + 3);
     let mut selected_range: Range<usize> = 0..0;
     let separator: String = "─".repeat(inner_width as usize);
 
@@ -318,7 +317,12 @@ fn build_preview_lines<'a>(
             )));
         }
 
-        lines.push(build_match_line(m, replacement, inner_width));
+        let effective_replacement = if mode == MatchMode::CaseAware {
+            case_aware_replacement(&m.matched_text, replacement)
+        } else {
+            Cow::Borrowed(replacement)
+        };
+        lines.push(build_match_line(m, &effective_replacement, inner_width));
 
         // Context after
         for ctx in &m.context_after {
@@ -384,6 +388,7 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let (lines, selected_range) = build_preview_lines(
         fm,
         replacement,
+        app.match_mode,
         is_preview_focused,
         app.selected_match,
         inner.width,

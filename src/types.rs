@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn file_matches_match_count() {
         let fm = FileMatches {
-            path: std::path::PathBuf::from("test.rs"),
+            path: PathBuf::from("test.rs"),
             matches: vec![
                 MatchInfo {
                     byte_offset_start: 0,

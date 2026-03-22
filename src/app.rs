@@ -352,7 +352,7 @@ impl App {
                 ));
                 continue;
             }
-            if let Err(e) = Self::apply_to_file(fm, &replacement) {
+            if let Err(e) = Self::apply_to_file(fm, &replacement, self.match_mode) {
                 self.status_message = Some(format!("{}: {e}", fm.path.display()));
             } else {
                 indices_to_remove.push(i);
@@ -379,7 +379,7 @@ impl App {
             self.status_message = Some(format!("Overlapping matches in {}", fm.path.display()));
             return;
         }
-        if let Err(e) = Self::apply_to_file(fm, &replacement) {
+        if let Err(e) = Self::apply_to_file(fm, &replacement, self.match_mode) {
             self.status_message = Some(e.to_string());
         } else {
             self.results.remove(sel);
@@ -406,7 +406,12 @@ impl App {
                 return;
             }
         };
-        let new_content = replace::apply_replacements(&content, slice::from_ref(m), &replacement);
+        let new_content = replace::apply_replacements(
+            &content,
+            slice::from_ref(m),
+            &replacement,
+            self.match_mode,
+        );
         if let Err(e) = replace::write_file(&fm.path, &new_content) {
             self.status_message = Some(format!("{}: {e}", fm.path.display()));
             return;
@@ -420,12 +425,12 @@ impl App {
         self.clamp_selection();
     }
 
-    fn apply_to_file(fm: &FileMatches, replacement: &str) -> anyhow::Result<()> {
+    fn apply_to_file(fm: &FileMatches, replacement: &str, mode: MatchMode) -> anyhow::Result<()> {
         if replace::is_file_stale(&fm.path, fm.content_hash)? {
             anyhow::bail!("file modified externally, skipping");
         }
         let content = fs::read_to_string(&fm.path)?;
-        let new_content = replace::apply_replacements(&content, &fm.matches, replacement);
+        let new_content = replace::apply_replacements(&content, &fm.matches, replacement, mode);
         replace::write_file(&fm.path, &new_content)?;
         Ok(())
     }
