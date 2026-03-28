@@ -342,7 +342,8 @@ impl App {
     }
 
     fn apply_all(&mut self) {
-        let replacement = self.replace_input.text().to_string();
+        let replacement =
+            replace::effective_replacement(self.replace_input.text(), self.match_mode);
         let mut indices_to_remove = Vec::with_capacity(self.results.len());
         for (i, fm) in self.results.iter().enumerate() {
             if replace::has_overlapping_matches(&fm.matches) {
@@ -371,7 +372,8 @@ impl App {
 
     fn apply_file(&mut self) {
         let sel = self.selected_file();
-        let replacement = self.replace_input.text().to_string();
+        let replacement =
+            replace::effective_replacement(self.replace_input.text(), self.match_mode);
         let Some(fm) = self.results.get(sel) else {
             return;
         };
@@ -389,7 +391,8 @@ impl App {
 
     fn apply_single_match(&mut self) {
         let sel = self.selected_file();
-        let replacement = self.replace_input.text().to_string();
+        let replacement =
+            replace::effective_replacement(self.replace_input.text(), self.match_mode);
         let Some(fm) = self.results.get_mut(sel) else {
             return;
         };

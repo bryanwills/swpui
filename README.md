@@ -47,7 +47,8 @@ TODO
 ## Features
 
 - [x] TODO: add done features
-- [ ] Multi-line matches
+- [x] Multi-line matches and replacement
+- [ ] Capture groups in replace
 - [ ] Toggle for hidden files
 - [ ] Focus pane with mouse
 - [ ] Glob to include/exclude files

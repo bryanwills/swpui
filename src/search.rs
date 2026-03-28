@@ -13,7 +13,9 @@ pub const MAX_MATCHES: usize = 100_000;
 use ignore::{WalkBuilder, WalkState};
 
 use crate::{
-    types::{ContextLine, FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult},
+    types::{
+        ContextLine, FileMatches, MatchInfo, MatchKind, MatchMode, SearchRequest, SearchResult,
+    },
     utils::hash_content,
 };
 
@@ -39,13 +41,42 @@ pub fn find_matches_in_content(
     }
     let num_lines = line_starts.len();
 
-    let get_line = |idx: usize| -> &str {
-        let start = line_starts[idx];
-        let end = line_starts.get(idx + 1).map_or(content.len(), |&s| s - 1);
-        content[start..end].trim_end_matches('\n')
-    };
+    let byte_ranges = find_byte_ranges(content, pattern, mode)?;
 
-    let byte_ranges: Vec<(usize, usize)> = match mode {
+    let mut matches = Vec::new();
+    let mut line_idx = 0;
+    for (byte_start, byte_end) in byte_ranges {
+        if match_count.load(Ordering::Relaxed) >= max_matches {
+            break;
+        }
+
+        while line_starts
+            .get(line_idx + 1)
+            .is_some_and(|&offset| offset <= byte_start)
+        {
+            line_idx += 1;
+        }
+
+        matches.push(build_match_info(
+            content,
+            &line_starts,
+            num_lines,
+            byte_start,
+            byte_end,
+            line_idx,
+        ));
+        match_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    Ok(matches)
+}
+
+fn find_byte_ranges(
+    content: &str,
+    pattern: &str,
+    mode: MatchMode,
+) -> anyhow::Result<Vec<(usize, usize)>> {
+    Ok(match mode {
         MatchMode::CaseAware => {
             let re = regex::RegexBuilder::new(&regex::escape(pattern))
                 .case_insensitive(true)
@@ -63,59 +94,93 @@ pub fn find_matches_in_content(
                 .map(|m| (m.start(), m.end()))
                 .collect()
         }
+        MatchMode::RegexMultiline => {
+            let re = regex::RegexBuilder::new(pattern)
+                .dot_matches_new_line(true)
+                .multi_line(true)
+                .crlf(true)
+                .build()?;
+            re.find_iter(content)
+                .map(|m| (m.start(), m.end()))
+                .collect()
+        }
+    })
+}
+
+fn build_match_info(
+    content: &str,
+    line_starts: &[usize],
+    num_lines: usize,
+    byte_start: usize,
+    byte_end: usize,
+    line_idx: usize,
+) -> MatchInfo {
+    let get_line = |idx: usize| -> &str {
+        let start = line_starts[idx];
+        let end = line_starts.get(idx + 1).map_or(content.len(), |&s| s - 1);
+        content[start..end].trim_end_matches('\n')
     };
 
-    let mut matches = Vec::new();
-    let mut line_idx = 0;
-    for (byte_start, byte_end) in byte_ranges {
-        if match_count.load(Ordering::Relaxed) >= max_matches {
-            break;
-        }
+    let line_number = line_idx + 1;
 
-        while line_starts
-            .get(line_idx + 1)
-            .is_some_and(|&offset| offset <= byte_start)
-        {
-            line_idx += 1;
-        }
-        let line_number = line_idx + 1;
+    let context_before: Vec<ContextLine> = (line_idx.saturating_sub(CONTEXT_LINES)..line_idx)
+        .map(|i| ContextLine {
+            line_number: i + 1,
+            content: get_line(i).to_string(),
+        })
+        .collect();
 
-        let context_before: Vec<ContextLine> = (line_idx.saturating_sub(CONTEXT_LINES)..line_idx)
-            .map(|i| ContextLine {
-                line_number: i + 1,
-                content: get_line(i).to_string(),
-            })
-            .collect();
+    let line_idx_end = if byte_end - byte_start > 1024 {
+        // for large matches: binary search
+        line_starts.partition_point(|&s| s < byte_end) - 1
+    } else {
+        // otherwise, linear search is fine
+        line_starts[line_idx + 1..]
+            .iter()
+            .position(|&s| s >= byte_end)
+            .map_or(num_lines - 1, |pos| line_idx + pos)
+    };
 
-        let context_after: Vec<ContextLine> = ((line_idx + 1)
-            ..=(line_idx + CONTEXT_LINES).min(num_lines.saturating_sub(1)))
-            .map(|i| ContextLine {
-                line_number: i + 1,
-                content: get_line(i).to_string(),
-            })
-            .collect();
+    let context_after: Vec<ContextLine> = ((line_idx_end + 1)
+        ..=(line_idx_end + CONTEXT_LINES).min(num_lines.saturating_sub(1)))
+        .map(|i| ContextLine {
+            line_number: i + 1,
+            content: get_line(i).to_string(),
+        })
+        .collect();
 
-        let line_start_byte = line_starts[line_idx];
-        let line_str = get_line(line_idx);
-        let match_col_start = byte_start - line_start_byte;
-        let match_col_end = (byte_end - line_start_byte).min(line_str.len());
+    let line_start_byte = line_starts[line_idx];
+    let line_end_start_byte = line_starts[line_idx_end];
+    let last_line_str = get_line(line_idx_end);
+    let match_col_start = byte_start - line_start_byte;
+    let match_col_end = (byte_end - line_end_start_byte).min(last_line_str.len());
 
-        matches.push(MatchInfo {
-            byte_offset_start: byte_start,
-            byte_offset_end: byte_end,
+    let kind = if line_idx_end == line_idx {
+        MatchKind::SingleLine {
             line_number,
-            matched_text: content[byte_start..byte_end].to_string(),
-            line_content: line_str.to_string(),
-            match_col_start,
-            match_col_end,
-            context_before,
-            context_after,
-            skip: false,
-        });
-        match_count.fetch_add(1, Ordering::Relaxed);
-    }
+            line_content: last_line_str.to_string(),
+        }
+    } else {
+        MatchKind::MultiLine {
+            line_number_start: line_idx + 1,
+            line_number_end: line_idx_end + 1,
+            matched_lines: (line_idx..=line_idx_end)
+                .map(|i| get_line(i).to_string())
+                .collect(),
+        }
+    };
 
-    Ok(matches)
+    MatchInfo {
+        byte_offset_start: byte_start,
+        byte_offset_end: byte_end,
+        matched_text: content[byte_start..byte_end].to_string(),
+        match_col_start,
+        match_col_end,
+        context_before,
+        context_after,
+        skip: false,
+        kind,
+    }
 }
 
 pub struct SearchWorker {
@@ -154,7 +219,7 @@ impl SearchWorker {
 
     fn execute_search(&self, request: &SearchRequest) {
         // validate regex upfront before walking files
-        if request.mode == MatchMode::Regex
+        if matches!(request.mode, MatchMode::Regex | MatchMode::RegexMultiline)
             && let Err(e) = regex::Regex::new(&request.pattern)
         {
             let _ = self
@@ -262,9 +327,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].line_number, 2);
         assert_eq!(matches[0].matched_text, "foo");
-        assert_eq!(matches[1].line_number, 4);
+        assert!(matches!(
+            matches[0].kind,
+            MatchKind::SingleLine { line_number: 2, .. }
+        ));
+        assert!(matches!(
+            matches[1].kind,
+            MatchKind::SingleLine { line_number: 4, .. }
+        ));
     }
 
     #[test]
@@ -296,7 +367,10 @@ mod tests {
         .unwrap();
         assert_eq!(matches.len(), 1);
         let m = &matches[0];
-        assert_eq!(m.line_number, 4);
+        assert!(matches!(
+            m.kind,
+            MatchKind::SingleLine { line_number: 4, .. }
+        ));
         assert_eq!(m.context_before.len(), CONTEXT_LINES);
         assert_eq!(m.context_before[0].content, "b");
         assert_eq!(m.context_before[1].content, "c");
@@ -360,6 +434,64 @@ mod tests {
             usize::MAX,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn multiline_match_produces_multiline_kind() {
+        let content = "foo\nbar\nbaz\n";
+        let matches = find_matches_in_content(
+            content,
+            r"foo\nbar",
+            MatchMode::RegexMultiline,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches!(
+            matches[0].kind,
+            MatchKind::MultiLine {
+                line_number_start: 1,
+                line_number_end: 2,
+                ..
+            }
+        ));
+        if let MatchKind::MultiLine { matched_lines, .. } = &matches[0].kind {
+            assert_eq!(matched_lines, &["foo", "bar"]);
+        }
+    }
+
+    #[test]
+    fn multiline_match_context_after_uses_end_line() {
+        // match spans lines 1-2; context_after should be lines 3+
+        let content = "foo\nbar\nbaz\nqux\n";
+        let matches = find_matches_in_content(
+            content,
+            r"foo\nbar",
+            MatchMode::RegexMultiline,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].context_after.len(), CONTEXT_LINES);
+        assert_eq!(matches[0].context_after[0].content, "baz");
+        assert_eq!(matches[0].context_after[0].line_number, 3);
+    }
+
+    #[test]
+    fn single_line_regex_multiline_produces_singleline_kind() {
+        let content = "hello world\n";
+        let matches = find_matches_in_content(
+            content,
+            r"hello",
+            MatchMode::RegexMultiline,
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches!(matches[0].kind, MatchKind::SingleLine { .. }));
     }
 
     #[test]

@@ -96,9 +96,50 @@ fn detect_case(s: &str) -> Option<Case<'static>> {
     CASES.iter().copied().find(|&case| s == s.to_case(case))
 }
 
+/// Return the effective replacement string, expanding escape sequences when in `RegexMultiline` mode.
+#[must_use]
+pub fn effective_replacement(raw: &str, mode: MatchMode) -> Cow<'_, str> {
+    if mode == MatchMode::RegexMultiline {
+        expand_escape_sequences(raw)
+    } else {
+        Cow::Borrowed(raw)
+    }
+}
+
+/// Expand escape sequences in a string (`\n`, `\r`, `\t`, `\\`).
+/// Unknown escape sequences are preserved as-is (e.g. `\x` stays `\x`).
+/// Returns a borrowed slice when no escape sequences are present.
+#[must_use]
+pub fn expand_escape_sequences(s: &str) -> Cow<'_, str> {
+    if !s.contains('\\') {
+        return Cow::Borrowed(s);
+    }
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('\\') | None => result.push('\\'),
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    Cow::Owned(result)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    use crate::types::MatchKind;
 
     use super::*;
 
@@ -106,14 +147,16 @@ mod tests {
         MatchInfo {
             byte_offset_start: start,
             byte_offset_end: end,
-            line_number: 1,
             matched_text: String::new(),
-            line_content: String::new(),
             match_col_start: 0,
             match_col_end: 0,
             context_before: vec![],
             context_after: vec![],
             skip: false,
+            kind: MatchKind::SingleLine {
+                line_number: 1,
+                line_content: String::new(),
+            },
         }
     }
 
@@ -307,5 +350,67 @@ mod tests {
         ];
         let result = apply_replacements(content, &matches, "world", MatchMode::CaseAware);
         assert_eq!(result, "World world");
+    }
+
+    #[test]
+    fn expand_no_escapes_borrows() {
+        let s = "hello world";
+        assert!(matches!(expand_escape_sequences(s), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn expand_newline() {
+        assert_eq!(
+            expand_escape_sequences(r"\n"),
+            Cow::Owned::<str>("\n".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_carriage_return() {
+        assert_eq!(
+            expand_escape_sequences(r"\r"),
+            Cow::Owned::<str>("\r".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_tab() {
+        assert_eq!(
+            expand_escape_sequences(r"\t"),
+            Cow::Owned::<str>("\t".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_backslash() {
+        assert_eq!(
+            expand_escape_sequences(r"\\"),
+            Cow::Owned::<str>("\\".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_unknown_escape_preserved() {
+        assert_eq!(
+            expand_escape_sequences(r"\x"),
+            Cow::Owned::<str>(r"\x".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_trailing_backslash_preserved() {
+        assert_eq!(
+            expand_escape_sequences("foo\\"),
+            Cow::Owned::<str>("foo\\".to_string())
+        );
+    }
+
+    #[test]
+    fn expand_combination() {
+        assert_eq!(
+            expand_escape_sequences(r"line1\nline2\ttabbed"),
+            Cow::Owned::<str>("line1\nline2\ttabbed".to_string())
+        );
     }
 }

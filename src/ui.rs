@@ -17,9 +17,9 @@ use ratatui::{
 
 use crate::{
     app::App,
-    replace::case_aware_replacement,
+    replace::{case_aware_replacement, effective_replacement},
     search::CONTEXT_LINES,
-    types::{FileMatches, MatchInfo, MatchMode, Pane},
+    types::{FileMatches, MatchInfo, MatchKind, MatchMode, Pane},
     utils::{format_file_entry, truncate_match_line},
 };
 
@@ -71,6 +71,7 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
         MatchMode::CaseAware => "Search (case-aware)".to_string(),
         MatchMode::Literal => "Search (literal)".to_string(),
         MatchMode::Regex => "Search (regex)".to_string(),
+        MatchMode::RegexMultiline => "Search (regex multiline)".to_string(),
     };
 
     // Search input
@@ -181,8 +182,12 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<'static> {
-    let before_match = &m.line_content[..m.match_col_start];
-    let after_match = &m.line_content[m.match_col_end..];
+    let MatchKind::SingleLine { line_content, .. } = &m.kind else {
+        // MultiLine matches are rendered by build_preview_lines directly
+        return Line::default();
+    };
+    let before_match = &line_content[..m.match_col_start];
+    let after_match = &line_content[m.match_col_end..];
     let dark_gray = Style::default().fg(Color::DarkGray);
 
     if m.skip {
@@ -270,6 +275,80 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
     }
 }
 
+fn build_match_header(m: &MatchInfo, is_selected: bool) -> Line<'static> {
+    let style = if is_selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let text = match &m.kind {
+        MatchKind::SingleLine { line_number, .. } => format!(" line {line_number}:"),
+        MatchKind::MultiLine {
+            line_number_start,
+            line_number_end,
+            ..
+        } => format!(" lines {line_number_start}-{line_number_end}:"),
+    };
+    Line::from(Span::styled(text, style))
+}
+
+fn build_context_lines(ctx: &[crate::types::ContextLine]) -> impl Iterator<Item = Line<'static>> + '_ {
+    ctx.iter().map(|c| {
+        Line::from(Span::styled(
+            format!(" {}", c.content),
+            Style::default().fg(Color::DarkGray),
+        ))
+    })
+}
+
+fn build_multiline_match_lines(
+    m: &MatchInfo,
+    matched_lines: &[String],
+    effective_replacement: &str,
+) -> Vec<Line<'static>> {
+    let removed_style = Style::default().fg(Color::Red);
+    let added_style = Style::default().fg(Color::Green);
+    let skipped_style = Style::default().fg(Color::DarkGray);
+    let prefix = &matched_lines[0][..m.match_col_start];
+    let suffix = matched_lines.last().map_or("", |l| &l[m.match_col_end..]);
+
+    let mut out = Vec::new();
+    if m.skip {
+        for line in matched_lines {
+            out.push(Line::from(Span::styled(format!("~ {line}"), skipped_style)));
+        }
+    } else {
+        for line in matched_lines {
+            out.push(Line::from(Span::styled(format!("- {line}"), removed_style)));
+        }
+        if !effective_replacement.is_empty() || !prefix.is_empty() || !suffix.is_empty() {
+            let repl_lines: Vec<&str> = effective_replacement.split('\n').collect();
+            let last_idx = repl_lines.len() - 1;
+            if last_idx == 0 {
+                out.push(Line::from(Span::styled(
+                    format!("+ {prefix}{}{suffix}", repl_lines[0]),
+                    added_style,
+                )));
+            } else {
+                out.push(Line::from(Span::styled(
+                    format!("+ {prefix}{}", repl_lines[0]),
+                    added_style,
+                )));
+                for mid in &repl_lines[1..last_idx] {
+                    out.push(Line::from(Span::styled(format!("+ {mid}"), added_style)));
+                }
+                out.push(Line::from(Span::styled(
+                    format!("+ {}{suffix}", repl_lines[last_idx]),
+                    added_style,
+                )));
+            }
+        }
+    }
+    out
+}
+
 fn build_preview_lines(
     fm: &FileMatches,
     replacement: &str,
@@ -286,7 +365,6 @@ fn build_preview_lines(
     for (match_idx, m) in fm.matches.iter().enumerate() {
         let is_selected = is_preview_focused && match_idx == selected_match;
 
-        // Horizontal separator between matches
         if match_idx > 0 {
             lines.push(Line::styled(
                 separator.clone(),
@@ -295,42 +373,24 @@ fn build_preview_lines(
         }
 
         let match_start = lines.len();
-
-        // Header line for this match
-        let header_style = if is_selected {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        lines.push(Line::from(Span::styled(
-            format!(" line {}:", m.line_number),
-            header_style,
-        )));
-
-        // Context before
-        for ctx in &m.context_before {
-            lines.push(Line::from(Span::styled(
-                format!(" {}", ctx.content),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
+        lines.push(build_match_header(m, is_selected));
+        lines.extend(build_context_lines(&m.context_before));
 
         let effective_replacement = if mode == MatchMode::CaseAware {
             case_aware_replacement(&m.matched_text, replacement)
         } else {
             Cow::Borrowed(replacement)
         };
-        lines.push(build_match_line(m, &effective_replacement, inner_width));
-
-        // Context after
-        for ctx in &m.context_after {
-            lines.push(Line::from(Span::styled(
-                format!(" {}", ctx.content),
-                Style::default().fg(Color::DarkGray),
-            )));
+        match &m.kind {
+            MatchKind::SingleLine { .. } => {
+                lines.push(build_match_line(m, &effective_replacement, inner_width));
+            }
+            MatchKind::MultiLine { matched_lines, .. } => {
+                lines.extend(build_multiline_match_lines(m, matched_lines, &effective_replacement));
+            }
         }
+
+        lines.extend(build_context_lines(&m.context_after));
 
         if is_selected {
             selected_range = match_start..lines.len();
@@ -383,11 +443,12 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
         .v_scroll(Some(&v_scroll));
     let inner = scroll_area.inner(area, None, Some(&app.preview_scroll));
 
-    let replacement = app.replace_input.text();
+    let raw_replacement = app.replace_input.text();
+    let replacement = effective_replacement(raw_replacement, app.match_mode);
     let is_preview_focused = app.focused_pane == Pane::Preview;
     let (lines, selected_range) = build_preview_lines(
         fm,
-        replacement,
+        &replacement,
         app.match_mode,
         is_preview_focused,
         app.selected_match,
@@ -454,4 +515,57 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         Line::from(hints.blue())
     };
     frame.render_widget(line, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::types::{FileMatches, MatchInfo, MatchKind, MatchMode};
+
+    use super::*;
+
+    fn make_multiline_match(
+        matched_lines: Vec<String>,
+        match_col_start: usize,
+        match_col_end: usize,
+    ) -> MatchInfo {
+        MatchInfo {
+            byte_offset_start: 0,
+            byte_offset_end: 10,
+            matched_text: matched_lines.join("\n"),
+            match_col_start,
+            match_col_end,
+            context_before: vec![],
+            context_after: vec![],
+            skip: false,
+            kind: MatchKind::MultiLine {
+                line_number_start: 1,
+                line_number_end: matched_lines.len(),
+                matched_lines,
+            },
+        }
+    }
+
+    #[test]
+    fn multiline_single_replacement_line() {
+        let fm = FileMatches {
+            path: PathBuf::from("test.rs"),
+            matches: vec![make_multiline_match(
+                vec!["    foo".to_string(), "bar".to_string()],
+                4, // match starts (first line)
+                3, // match ends (last line)
+            )],
+            content_hash: [0; 32],
+        };
+        let (lines, _) = build_preview_lines(&fm, "replacement", MatchMode::Literal, false, 0, 80);
+        // first + line should carry the prefix spaces
+        let plus_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| l.spans.first().is_some_and(|s| s.content.starts_with("+ ")))
+            .collect();
+        assert_eq!(plus_lines.len(), 1);
+        assert!(plus_lines[0].spans[0].content.starts_with("+ "));
+        assert!(plus_lines[0].spans[0].content.contains("    replacement"));
+    }
 }

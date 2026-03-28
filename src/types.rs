@@ -6,6 +6,7 @@ pub enum MatchMode {
     CaseAware,
     Literal,
     Regex,
+    RegexMultiline,
 }
 
 impl MatchMode {
@@ -14,7 +15,8 @@ impl MatchMode {
         match self {
             Self::CaseAware => Self::Literal,
             Self::Literal => Self::Regex,
-            Self::Regex => Self::CaseAware,
+            Self::Regex => Self::RegexMultiline,
+            Self::RegexMultiline => Self::CaseAware,
         }
     }
 }
@@ -26,17 +28,29 @@ pub struct ContextLine {
 }
 
 #[derive(Debug, Clone)]
+pub enum MatchKind {
+    SingleLine {
+        line_number: usize,
+        line_content: String,
+    },
+    MultiLine {
+        line_number_start: usize,
+        line_number_end: usize,
+        matched_lines: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct MatchInfo {
     pub byte_offset_start: usize,
     pub byte_offset_end: usize,
-    pub line_number: usize,
     pub matched_text: String,
-    pub line_content: String,
     pub match_col_start: usize,
     pub match_col_end: usize,
     pub context_before: Vec<ContextLine>,
     pub context_after: Vec<ContextLine>,
     pub skip: bool,
+    pub kind: MatchKind,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +127,8 @@ mod tests {
         mode = mode.toggle();
         assert_eq!(mode, MatchMode::Regex);
         mode = mode.toggle();
+        assert_eq!(mode, MatchMode::RegexMultiline);
+        mode = mode.toggle();
         assert_eq!(mode, MatchMode::CaseAware);
     }
 
@@ -131,14 +147,16 @@ mod tests {
         let m = MatchInfo {
             byte_offset_start: 0,
             byte_offset_end: 5,
-            line_number: 1,
             matched_text: "hello".to_string(),
-            line_content: "hello world".to_string(),
             match_col_start: 0,
             match_col_end: 5,
             context_before: vec![],
             context_after: vec![],
             skip: false,
+            kind: MatchKind::SingleLine {
+                line_number: 1,
+                line_content: "hello world".to_string(),
+            },
         };
         assert!(!m.skip);
     }
@@ -151,26 +169,30 @@ mod tests {
                 MatchInfo {
                     byte_offset_start: 0,
                     byte_offset_end: 3,
-                    line_number: 1,
                     matched_text: "foo".to_string(),
-                    line_content: "foo bar".to_string(),
                     match_col_start: 0,
                     match_col_end: 3,
                     context_before: vec![],
                     context_after: vec![],
                     skip: false,
+                    kind: MatchKind::SingleLine {
+                        line_number: 1,
+                        line_content: "foo bar".to_string(),
+                    },
                 },
                 MatchInfo {
                     byte_offset_start: 10,
                     byte_offset_end: 13,
-                    line_number: 2,
                     matched_text: "foo".to_string(),
-                    line_content: "baz foo qux".to_string(),
                     match_col_start: 4,
                     match_col_end: 7,
                     context_before: vec![],
                     context_after: vec![],
                     skip: true,
+                    kind: MatchKind::SingleLine {
+                        line_number: 2,
+                        line_content: "baz foo qux".to_string(),
+                    },
                 },
             ],
             content_hash: [0; 32],
@@ -199,5 +221,56 @@ mod tests {
         assert_eq!(pane, Pane::Preview);
         pane = pane.prev();
         assert_eq!(pane, Pane::FileList);
+    }
+
+    #[test]
+    fn match_kind_single_line() {
+        let m = MatchInfo {
+            byte_offset_start: 0,
+            byte_offset_end: 5,
+            matched_text: "hello".to_string(),
+            match_col_start: 0,
+            match_col_end: 5,
+            context_before: vec![],
+            context_after: vec![],
+            skip: false,
+            kind: MatchKind::SingleLine {
+                line_number: 1,
+                line_content: "hello world".to_string(),
+            },
+        };
+        assert!(!m.skip);
+        assert_eq!(m.matched_text, "hello");
+        assert!(matches!(m.kind, MatchKind::SingleLine { .. }));
+    }
+
+    #[test]
+    fn match_kind_multi_line() {
+        let m = MatchInfo {
+            byte_offset_start: 0,
+            byte_offset_end: 20,
+            matched_text: "hello\nworld".to_string(),
+            match_col_start: 0,
+            match_col_end: 5,
+            context_before: vec![],
+            context_after: vec![],
+            skip: false,
+            kind: MatchKind::MultiLine {
+                line_number_start: 1,
+                line_number_end: 2,
+                matched_lines: vec!["hello".to_string(), "world".to_string()],
+            },
+        };
+        assert!(matches!(m.kind, MatchKind::MultiLine { .. }));
+        if let MatchKind::MultiLine {
+            line_number_start,
+            line_number_end,
+            matched_lines,
+        } = &m.kind
+        {
+            assert_eq!(*line_number_start, 1);
+            assert_eq!(*line_number_end, 2);
+            assert_eq!(matched_lines.len(), 2);
+        }
     }
 }
