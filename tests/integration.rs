@@ -3,7 +3,7 @@
 use std::{fs, io::Write as _, sync::atomic::AtomicUsize};
 
 use swpui::{
-    replace::{apply_replacements, write_file},
+    replace::{apply_replacements, effective_replacement, write_file},
     search::find_matches_in_content,
     types::MatchMode,
     utils::{hash_file, is_file_stale},
@@ -28,7 +28,6 @@ fn full_search_and_replace_workflow() {
     let path = dir.path().join("hello.txt");
     let content = fs::read_to_string(&path).unwrap();
 
-    // Search
     let matches = find_matches_in_content(
         &content,
         "hello",
@@ -39,11 +38,9 @@ fn full_search_and_replace_workflow() {
     .unwrap();
     assert_eq!(matches.len(), 2);
 
-    // Apply replacements
     let new_content = apply_replacements(&content, &matches, "hi", MatchMode::Literal);
     assert_eq!(new_content, "hi world\nhi rust\n");
 
-    // Write atomically
     write_file(&path, &new_content).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "hi world\nhi rust\n");
 }
@@ -89,8 +86,37 @@ fn skip_preserves_matches() {
     .unwrap();
     assert_eq!(matches.len(), 2);
 
-    // Skip the first match
+    // skip the first match
     matches[0].skip = true;
     let new_content = apply_replacements(content, &matches, "ccc", MatchMode::Literal);
     assert_eq!(new_content, "aaa bbb ccc\n");
+}
+
+#[test]
+fn multiline_search_and_replace_workflow() {
+    let dir = create_test_dir(&[("multi.txt", "hello\nfoo bar\nbaz qux\nend\n")]);
+    let path = dir.path().join("multi.txt");
+    let content = fs::read_to_string(&path).unwrap();
+
+    let matches = find_matches_in_content(
+        &content,
+        r"bar\nbaz",
+        MatchMode::RegexMultiline,
+        &AtomicUsize::new(0),
+        usize::MAX,
+    )
+    .unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].matched_text, "bar\nbaz");
+
+    let replacement = effective_replacement(r"BAR\nBAZ", MatchMode::RegexMultiline);
+    let new_content =
+        apply_replacements(&content, &matches, &replacement, MatchMode::RegexMultiline);
+    assert_eq!(new_content, "hello\nfoo BAR\nBAZ qux\nend\n");
+
+    write_file(&path, &new_content).unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "hello\nfoo BAR\nBAZ qux\nend\n"
+    );
 }
