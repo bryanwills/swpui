@@ -650,7 +650,7 @@ mod tests {
         fs::write(&path, "original content").unwrap();
         let hash = hash_file(&path).unwrap();
 
-        // Modify the file externally
+        // modify the file externally
         fs::write(&path, "modified content").unwrap();
 
         assert!(is_file_stale(&path, hash).unwrap());

@@ -194,7 +194,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        // Confirmation modal intercepts all keys
+        // confirmation modal intercepts all keys
         if self.confirm_apply_all {
             match key.code {
                 KeyCode::Char('y') => {

@@ -46,8 +46,11 @@ TODO
 
 ## Features
 
-- [x] TODO: add done features
-- [x] Multi-line matches and replacement
+- [x] Case-aware replacement
+- [x] Regex support (incl. multiline)
+- [x] Multithreaded search
+- [x] Respects (git)ignore files
+- [x] Batch actions
 - [ ] Capture groups in replace
 - [ ] Toggle for hidden files
 - [ ] Focus pane with mouse
@@ -55,6 +58,8 @@ TODO
 
 ## Credits
 
-This tool was inspired by [serpl](https://github.com/yassinebridi/serpl), thanks to them for inspiring this project! It
-would also not have been possible without the amazing work put into [ratatui](https://ratatui.rs/) and
-[rat-widget](https://github.com/thscharler/rat-salsa), thank you!
+This tool was inspired by [serpl](https://github.com/yassinebridi/serpl), thanks for the great idea! It would also not
+have been possible without the amazing work put into [ratatui](https://ratatui.rs/) and
+[rat-widget](https://github.com/thscharler/rat-salsa), thank you! Finally, a massive thanks to the creator of
+[ripgrep](https://github.com/burntsushi/ripgrep) for their awesome work on [ignore](https://crates.io/crates/ignore) and
+[regex](https://crates.io/crates/regex).

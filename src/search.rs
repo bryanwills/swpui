@@ -565,7 +565,7 @@ mod tests {
         );
         let handle = thread::spawn(move || worker.run());
 
-        // Send first request then immediately cancel and send second
+        // send first request then immediately cancel and send second
         cmd_tx
             .send(SearchRequest {
                 pattern: "needle".to_string(),
@@ -584,7 +584,7 @@ mod tests {
             })
             .unwrap();
 
-        // Drain results — we should eventually get Complete(2)
+        // drain results; we should eventually get Complete(2)
         let mut got_gen2_complete = false;
         loop {
             match result_rx.recv_timeout(Duration::from_secs(2)) {

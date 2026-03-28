@@ -74,7 +74,7 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
         MatchMode::RegexMultiline => "Search (regex multiline)".to_string(),
     };
 
-    // Search input
+    // search input
     app.search_input
         .focus
         .set(app.focused_pane == Pane::SearchInput);
@@ -92,7 +92,7 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
         frame.set_cursor_position((cx, cy));
     }
 
-    // Replace input
+    // replace input
     app.replace_input
         .focus
         .set(app.focused_pane == Pane::ReplaceInput);
@@ -183,7 +183,7 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
 
 fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<'static> {
     let MatchKind::SingleLine { line_content, .. } = &m.kind else {
-        // MultiLine matches are rendered by build_preview_lines directly
+        // multiline matches are rendered by build_preview_lines directly
         return Line::default();
     };
     let before_match = &line_content[..m.match_col_start];
@@ -455,7 +455,7 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
         inner.width,
     );
 
-    // Update scroll state and auto-scroll to keep selected match visible
+    // update scroll state and auto-scroll to keep selected match visible
     app.preview_scroll.set_page_len(inner.height as usize);
     app.preview_scroll
         .set_max_offset(lines.len().saturating_sub(inner.height as usize));
