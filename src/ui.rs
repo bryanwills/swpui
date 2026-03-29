@@ -26,9 +26,13 @@ use crate::{
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
-    // main layout: content area + status bar
-    let [content_area, status_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    // main layout: content area + error/status bar
+    let [content_area, status_area, hints_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(app.status_message.is_some().into()),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     // split content into left and right columns
     // shrink the file list when the preview pane is focused
@@ -48,7 +52,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     render_input_area(app, frame, input_area);
     render_file_list(app, frame, file_area);
     render_preview(app, frame, right);
-    render_status_bar(app, frame, status_area);
+    render_status_bar(app, frame, status_area, hints_area);
 
     if app.confirm_apply_all {
         render_confirm_modal(frame, area);
@@ -191,13 +195,7 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
     let dark_gray = Style::default().fg(Color::DarkGray);
 
     if m.skip {
-        let t = truncate_match_line(
-            before,
-            &m.matched_text,
-            None,
-            after,
-            inner_width as usize,
-        );
+        let t = truncate_match_line(before, &m.matched_text, None, after, inner_width as usize);
         let mut spans = Vec::with_capacity(7);
         spans.push(Span::raw(" "));
         if t.left_ellipsis {
@@ -248,13 +246,7 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
         }
         Line::from(spans)
     } else {
-        let t = truncate_match_line(
-            before,
-            &m.matched_text,
-            None,
-            after,
-            inner_width as usize,
-        );
+        let t = truncate_match_line(before, &m.matched_text, None, after, inner_width as usize);
         let mut spans = Vec::with_capacity(5);
         spans.push(Span::raw(" "));
         if t.left_ellipsis {
@@ -503,24 +495,24 @@ fn render_confirm_modal(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
-    let line = if let Some(msg) = &app.status_message {
-        Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)))
-    } else {
-        let hints = match app.focused_pane {
-            Pane::SearchInput | Pane::ReplaceInput => {
-                "ctrl-r: mode | esc: file list | tab/shift-tab: cycle | q/ctrl-c: quit"
-            }
-            Pane::FileList => {
-                "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/shift-tab: cycle | q/ctrl-c: quit"
-            }
-            Pane::Preview => {
-                "space: skip | enter: apply match | s: skip file | f: apply file | j/k: navigate | h/esc: back | tab/shift-tab: cycle | q/ctrl-c: quit"
-            }
-        };
-        Line::from(hints.blue())
+fn render_status_bar(app: &App, frame: &mut Frame, status_area: Rect, hints_area: Rect) {
+    if let Some(msg) = &app.status_message {
+        let msg = Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)));
+        frame.render_widget(msg, status_area);
+    }
+    let hints = match app.focused_pane {
+        Pane::SearchInput | Pane::ReplaceInput => {
+            "ctrl-r: mode | esc: file list | tab/shift-tab: cycle | q/ctrl-c: quit"
+        }
+        Pane::FileList => {
+            "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/shift-tab: cycle | q/ctrl-c: quit"
+        }
+        Pane::Preview => {
+            "space: skip | enter: apply match | s: skip file | f: apply file | j/k: navigate | h/esc: back | tab/shift-tab: cycle | q/ctrl-c: quit"
+        }
     };
-    frame.render_widget(line, area);
+    let hints = Line::from(hints.blue());
+    frame.render_widget(hints, hints_area);
 }
 
 #[cfg(test)]
