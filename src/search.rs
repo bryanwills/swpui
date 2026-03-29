@@ -150,10 +150,10 @@ fn build_match_info(
         .collect();
 
     let line_start_byte = line_starts[line_idx];
-    let line_end_start_byte = line_starts[line_idx_end];
+    let last_line_byte = line_starts[line_idx_end];
     let last_line_str = get_line(line_idx_end);
     let match_col_start = byte_start - line_start_byte;
-    let match_col_end = (byte_end - line_end_start_byte).min(last_line_str.len());
+    let match_col_end = (byte_end - last_line_byte).min(last_line_str.len());
 
     let kind = if line_idx_end == line_idx {
         MatchKind::SingleLine {
@@ -222,9 +222,10 @@ impl SearchWorker {
         if matches!(request.mode, MatchMode::Regex | MatchMode::RegexMultiline)
             && let Err(e) = regex::Regex::new(&request.pattern)
         {
-            let _ = self
-                .result_tx
-                .send(SearchResult::Error(request.generation, e.to_string()));
+            let _ = self.result_tx.send(SearchResult::Error {
+                generation: request.generation,
+                message: e.to_string(),
+            });
             return;
         }
 
@@ -280,7 +281,10 @@ impl SearchWorker {
                     content_hash,
                 };
                 if result_tx
-                    .send(SearchResult::FileMatches(request.generation, file_matches))
+                    .send(SearchResult::FileMatches {
+                        generation: request.generation,
+                        file_matches,
+                    })
                     .is_err()
                 {
                     return WalkState::Quit;
@@ -290,9 +294,10 @@ impl SearchWorker {
             })
         });
         let truncated = match_count.load(Ordering::Relaxed) >= MAX_MATCHES;
-        let _ = self
-            .result_tx
-            .send(SearchResult::Complete(request.generation, truncated));
+        let _ = self.result_tx.send(SearchResult::Complete {
+            generation: request.generation,
+            truncated,
+        });
     }
 }
 
@@ -529,16 +534,19 @@ mod tests {
         let mut got_file = false;
         loop {
             match result_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
-                SearchResult::FileMatches(generation, fm) => {
+                SearchResult::FileMatches {
+                    generation,
+                    file_matches: fm,
+                } => {
                     assert_eq!(generation, 1);
                     assert_eq!(fm.matches.len(), 2);
                     got_file = true;
                 }
-                SearchResult::Complete(generation, _) => {
+                SearchResult::Complete { generation, .. } => {
                     assert_eq!(generation, 1);
                     break;
                 }
-                SearchResult::Error(_, _) => panic!("unexpected error"),
+                SearchResult::Error { .. } => panic!("unexpected error"),
             }
         }
         assert!(got_file);
@@ -588,7 +596,7 @@ mod tests {
         let mut got_gen2_complete = false;
         loop {
             match result_rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(SearchResult::Complete(2, _)) => {
+                Ok(SearchResult::Complete { generation: 2, .. }) => {
                     got_gen2_complete = true;
                     break;
                 }

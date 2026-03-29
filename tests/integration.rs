@@ -38,7 +38,7 @@ fn full_search_and_replace_workflow() {
     .unwrap();
     assert_eq!(matches.len(), 2);
 
-    let new_content = apply_replacements(&content, &matches, "hi", MatchMode::Literal);
+    let new_content = apply_replacements(content, &matches, "hi", MatchMode::Literal);
     assert_eq!(new_content, "hi world\nhi rust\n");
 
     write_file(&path, &new_content).unwrap();
@@ -111,7 +111,7 @@ fn multiline_search_and_replace_workflow() {
 
     let replacement = effective_replacement(r"BAR\nBAZ", MatchMode::RegexMultiline);
     let new_content =
-        apply_replacements(&content, &matches, &replacement, MatchMode::RegexMultiline);
+        apply_replacements(content, &matches, &replacement, MatchMode::RegexMultiline);
     assert_eq!(new_content, "hello\nfoo BAR\nBAZ qux\nend\n");
 
     write_file(&path, &new_content).unwrap();

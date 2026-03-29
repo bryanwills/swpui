@@ -50,13 +50,13 @@ pub fn case_aware_replacement<'a>(matched_text: &str, replacement: &'a str) -> C
 
 #[must_use]
 pub fn apply_replacements(
-    content: &str,
+    content: impl Into<String>,
     matches: &[MatchInfo],
     replacement: &str,
     mode: MatchMode,
 ) -> String {
     let mut active: Vec<&MatchInfo> = matches.iter().filter(|m| !m.skip).collect();
-    let mut result = content.to_string();
+    let mut result = content.into();
     if active.is_empty() {
         return result;
     }
@@ -84,7 +84,7 @@ pub fn has_overlapping_matches(matches: &[MatchInfo]) -> bool {
         .any(|[w0, w1]| w0.byte_offset_end > w1.byte_offset_start)
 }
 
-pub fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
+pub fn write_file(path: impl AsRef<Path>, content: &str) -> anyhow::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new()?;
     tmp.write_all(content.as_bytes())?;
     tmp.persist(path)?;

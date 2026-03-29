@@ -127,12 +127,16 @@ impl App {
     fn poll_search_results(&mut self) {
         while let Ok(result) = self.result_rx.try_recv() {
             match result {
-                SearchResult::FileMatches(generation, file_matches)
-                    if generation == self.generation =>
-                {
+                SearchResult::FileMatches {
+                    generation,
+                    file_matches,
+                } if generation == self.generation => {
                     self.results.push(file_matches);
                 }
-                SearchResult::Complete(generation, truncated) if generation == self.generation => {
+                SearchResult::Complete {
+                    generation,
+                    truncated,
+                } if generation == self.generation => {
                     self.results.sort_by(|a, b| a.path.cmp(&b.path));
                     self.searching = false;
                     self.truncated = truncated;
@@ -141,14 +145,17 @@ impl App {
                         self.status_message = Some(format!("Results capped at {total} matches"));
                     }
                 }
-                SearchResult::Error(generation, msg) if generation == self.generation => {
-                    self.status_message = Some(msg);
+                SearchResult::Error {
+                    generation,
+                    message,
+                } if generation == self.generation => {
+                    self.status_message = Some(message);
                     self.searching = false;
                     self.search_input.set_invalid(true);
                 }
-                SearchResult::FileMatches(..)
-                | SearchResult::Complete(..)
-                | SearchResult::Error(..) => {}
+                SearchResult::FileMatches { .. }
+                | SearchResult::Complete { .. }
+                | SearchResult::Error { .. } => {}
             }
         }
     }
@@ -409,12 +416,8 @@ impl App {
                 return;
             }
         };
-        let new_content = replace::apply_replacements(
-            &content,
-            slice::from_ref(m),
-            &replacement,
-            self.match_mode,
-        );
+        let new_content =
+            replace::apply_replacements(content, slice::from_ref(m), &replacement, self.match_mode);
         if let Err(e) = replace::write_file(&fm.path, &new_content) {
             self.status_message = Some(format!("{}: {e}", fm.path.display()));
             return;
@@ -433,7 +436,7 @@ impl App {
             anyhow::bail!("file modified externally, skipping");
         }
         let content = fs::read_to_string(&fm.path)?;
-        let new_content = replace::apply_replacements(&content, &fm.matches, replacement, mode);
+        let new_content = replace::apply_replacements(content, &fm.matches, replacement, mode);
         replace::write_file(&fm.path, &new_content)?;
         Ok(())
     }

@@ -186,16 +186,16 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
         // multiline matches are rendered by build_preview_lines directly
         return Line::default();
     };
-    let before_match = &line_content[..m.match_col_start];
-    let after_match = &line_content[m.match_col_end..];
+    let before = &line_content[..m.match_col_start];
+    let after = &line_content[m.match_col_end..];
     let dark_gray = Style::default().fg(Color::DarkGray);
 
     if m.skip {
         let t = truncate_match_line(
-            before_match,
+            before,
             &m.matched_text,
             None,
-            after_match,
+            after,
             inner_width as usize,
         );
         let mut spans = Vec::with_capacity(7);
@@ -216,10 +216,10 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
         Line::from(spans)
     } else if !replacement.is_empty() {
         let t = truncate_match_line(
-            before_match,
+            before,
             &m.matched_text,
             Some(replacement),
-            after_match,
+            after,
             inner_width as usize,
         );
         let mut spans = Vec::with_capacity(7);
@@ -249,10 +249,10 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
         Line::from(spans)
     } else {
         let t = truncate_match_line(
-            before_match,
+            before,
             &m.matched_text,
             None,
-            after_match,
+            after,
             inner_width as usize,
         );
         let mut spans = Vec::with_capacity(5);
@@ -294,7 +294,9 @@ fn build_match_header(m: &MatchInfo, is_selected: bool) -> Line<'static> {
     Line::from(Span::styled(text, style))
 }
 
-fn build_context_lines(ctx: &[crate::types::ContextLine]) -> impl Iterator<Item = Line<'static>> + '_ {
+fn build_context_lines(
+    ctx: &[crate::types::ContextLine],
+) -> impl Iterator<Item = Line<'static>> + '_ {
     ctx.iter().map(|c| {
         Line::from(Span::styled(
             format!(" {}", c.content),
@@ -386,7 +388,11 @@ fn build_preview_lines(
                 lines.push(build_match_line(m, &effective_replacement, inner_width));
             }
             MatchKind::MultiLine { matched_lines, .. } => {
-                lines.extend(build_multiline_match_lines(m, matched_lines, &effective_replacement));
+                lines.extend(build_multiline_match_lines(
+                    m,
+                    matched_lines,
+                    &effective_replacement,
+                ));
             }
         }
 

@@ -26,7 +26,8 @@ pub struct TruncatedLine<'a> {
 /// 4. Ellipsis in the basename
 /// 5. Right-aligned truncation
 #[must_use]
-pub fn format_file_entry(rel: &Path, suffix: &str, max_width: usize) -> String {
+pub fn format_file_entry(rel: impl AsRef<Path>, suffix: &str, max_width: usize) -> String {
+    let rel = rel.as_ref();
     let mut dirs: Vec<String> = rel
         .components()
         .filter_map(|c| {
@@ -170,14 +171,14 @@ pub fn truncate_match_line<'a>(
             (remaining.div_ceil(2), remaining / 2)
         };
 
-        let (trimmed_before, left_ellipsis) = trim_start_to_width(before, before_budget);
-        let (trimmed_after, right_ellipsis) = trim_end_to_width(after, after_budget);
+        let (before, left_ellipsis) = trim_start_to_width(before, before_budget);
+        let (after, right_ellipsis) = trim_end_to_width(after, after_budget);
 
         return TruncatedLine {
-            before: trimmed_before,
+            before,
             matched,
             replacement,
-            after: trimmed_after,
+            after,
             left_ellipsis,
             right_ellipsis,
         };
@@ -187,7 +188,7 @@ pub fn truncate_match_line<'a>(
     let left_ellipsis = true;
     let avail = budget.saturating_sub(1); // reserve 1 col for left ellipsis
 
-    let (visible_matched, visible_replacement, right_ellipsis) = if let Some(repl) = replacement {
+    let (matched, replacement, right_ellipsis) = if let Some(repl) = replacement {
         let repl_w = repl.width();
         if repl_w <= avail {
             // replacement fits, give remaining to match (from the right end)
@@ -205,8 +206,8 @@ pub fn truncate_match_line<'a>(
 
     TruncatedLine {
         before: "",
-        matched: visible_matched,
-        replacement: visible_replacement,
+        matched,
+        replacement,
         after: "",
         left_ellipsis,
         right_ellipsis,

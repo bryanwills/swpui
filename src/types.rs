@@ -74,9 +74,18 @@ pub struct SearchRequest {
 }
 
 pub enum SearchResult {
-    FileMatches(u64, FileMatches),
-    Complete(u64, bool),
-    Error(u64, String),
+    FileMatches {
+        generation: u64,
+        file_matches: FileMatches,
+    },
+    Complete {
+        generation: u64,
+        truncated: bool,
+    },
+    Error {
+        generation: u64,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
