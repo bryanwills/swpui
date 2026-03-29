@@ -11,6 +11,7 @@ use std::{
 pub const MAX_MATCHES: usize = 100_000;
 
 use ignore::{WalkBuilder, WalkState};
+use regex::Regex;
 
 use crate::{
     types::{
@@ -21,14 +22,44 @@ use crate::{
 
 pub const CONTEXT_LINES: usize = 2;
 
+#[derive(Clone, Debug)]
+pub enum Pattern<'a> {
+    Empty,
+    Literal(&'a [u8]),
+    Regex(Regex),
+}
+
+impl<'a> Pattern<'a> {
+    pub fn new(pattern: &'a str, mode: MatchMode) -> anyhow::Result<Self> {
+        if pattern.is_empty() {
+            return Ok(Pattern::Empty);
+        }
+        Ok(match mode {
+            MatchMode::Literal => Pattern::Literal(pattern.as_bytes()),
+            MatchMode::Regex => Pattern::Regex(regex::Regex::new(pattern)?),
+            MatchMode::CaseAware => Pattern::Regex(
+                regex::RegexBuilder::new(&regex::escape(pattern))
+                    .case_insensitive(true)
+                    .build()?,
+            ),
+            MatchMode::RegexMultiline => Pattern::Regex(
+                regex::RegexBuilder::new(pattern)
+                    .dot_matches_new_line(true)
+                    .multi_line(true)
+                    .crlf(true)
+                    .build()?,
+            ),
+        })
+    }
+}
+
 pub fn find_matches_in_content(
     content: &str,
-    pattern: &str,
-    mode: MatchMode,
+    pattern: &Pattern,
     match_count: &AtomicUsize,
     max_matches: usize,
 ) -> anyhow::Result<Vec<MatchInfo>> {
-    if pattern.is_empty() || match_count.load(Ordering::Relaxed) >= max_matches {
+    if matches!(pattern, Pattern::Empty) || match_count.load(Ordering::Relaxed) >= max_matches {
         return Ok(Vec::new());
     }
 
@@ -41,7 +72,7 @@ pub fn find_matches_in_content(
     }
     let num_lines = line_starts.len();
 
-    let byte_ranges = find_byte_ranges(content, pattern, mode)?;
+    let byte_ranges = find_byte_ranges(content, pattern);
 
     let mut matches = Vec::new();
     let mut line_idx = 0;
@@ -71,40 +102,17 @@ pub fn find_matches_in_content(
     Ok(matches)
 }
 
-fn find_byte_ranges(
-    content: &str,
-    pattern: &str,
-    mode: MatchMode,
-) -> anyhow::Result<Vec<(usize, usize)>> {
-    Ok(match mode {
-        MatchMode::CaseAware => {
-            let re = regex::RegexBuilder::new(&regex::escape(pattern))
-                .case_insensitive(true)
-                .build()?;
-            re.find_iter(content)
-                .map(|m| (m.start(), m.end()))
-                .collect()
-        }
-        MatchMode::Literal => memchr::memmem::find_iter(content.as_bytes(), pattern.as_bytes())
+fn find_byte_ranges(content: &str, pattern: &Pattern) -> Vec<(usize, usize)> {
+    match pattern {
+        Pattern::Empty => Vec::new(),
+        Pattern::Literal(pattern) => memchr::memmem::find_iter(content.as_bytes(), pattern)
             .map(|pos| (pos, pos + pattern.len()))
             .collect(),
-        MatchMode::Regex => {
-            let re = regex::Regex::new(pattern)?;
-            re.find_iter(content)
-                .map(|m| (m.start(), m.end()))
-                .collect()
-        }
-        MatchMode::RegexMultiline => {
-            let re = regex::RegexBuilder::new(pattern)
-                .dot_matches_new_line(true)
-                .multi_line(true)
-                .crlf(true)
-                .build()?;
-            re.find_iter(content)
-                .map(|m| (m.start(), m.end()))
-                .collect()
-        }
-    })
+        Pattern::Regex(re) => re
+            .find_iter(content)
+            .map(|m| (m.start(), m.end()))
+            .collect(),
+    }
 }
 
 fn build_match_info(
@@ -219,15 +227,16 @@ impl SearchWorker {
 
     fn execute_search(&self, request: &SearchRequest) {
         // validate regex upfront before walking files
-        if matches!(request.mode, MatchMode::Regex | MatchMode::RegexMultiline)
-            && let Err(e) = regex::Regex::new(&request.pattern)
-        {
-            let _ = self.result_tx.send(SearchResult::Error {
-                generation: request.generation,
-                message: e.to_string(),
-            });
-            return;
-        }
+        let pattern = match Pattern::new(&request.pattern, request.mode) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                let _ = self.result_tx.send(SearchResult::Error {
+                    generation: request.generation,
+                    message: e.to_string(),
+                });
+                return;
+            }
+        };
 
         let walker = WalkBuilder::new(&self.root)
             .filter_entry(|entry| {
@@ -240,6 +249,7 @@ impl SearchWorker {
         let match_count = &AtomicUsize::new(0);
         walker.run(|| {
             let result_tx = result_tx.clone();
+            let pattern = Arc::clone(&pattern);
             Box::new(move |entry| {
                 if cancelled.load(Ordering::Relaxed) {
                     return WalkState::Quit;
@@ -260,13 +270,9 @@ impl SearchWorker {
                     return WalkState::Continue;
                 };
 
-                let Ok(matches) = find_matches_in_content(
-                    &content,
-                    &request.pattern,
-                    request.mode,
-                    match_count,
-                    MAX_MATCHES,
-                ) else {
+                let Ok(matches) =
+                    find_matches_in_content(&content, &pattern, match_count, MAX_MATCHES)
+                else {
                     return WalkState::Continue;
                 };
 
@@ -325,8 +331,7 @@ mod tests {
         let content = "line one\nfoo bar\nline three\nfoo again\n";
         let matches = find_matches_in_content(
             content,
-            "foo",
-            MatchMode::Literal,
+            &Pattern::new("foo", MatchMode::Literal).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -348,8 +353,7 @@ mod tests {
         let content = "hello world\nhello rust\ngoodbye\n";
         let matches = find_matches_in_content(
             content,
-            r"hello \w+",
-            MatchMode::Regex,
+            &Pattern::new(r"hello \w+", MatchMode::Regex).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -364,8 +368,7 @@ mod tests {
         let content = "a\nb\nc\nmatch\nd\ne\nf\n";
         let matches = find_matches_in_content(
             content,
-            "match",
-            MatchMode::Literal,
+            &Pattern::new("match", MatchMode::Literal).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -389,8 +392,7 @@ mod tests {
         let content = "match\na\nb\nc\n";
         let matches = find_matches_in_content(
             content,
-            "match",
-            MatchMode::Literal,
+            &Pattern::new("match", MatchMode::Literal).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -404,8 +406,7 @@ mod tests {
         let content = "a\nb\nc\nmatch\n";
         let matches = find_matches_in_content(
             content,
-            "match",
-            MatchMode::Literal,
+            &Pattern::new("match", MatchMode::Literal).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -419,8 +420,7 @@ mod tests {
         let content = "hello world\n";
         let matches = find_matches_in_content(
             content,
-            "",
-            MatchMode::Literal,
+            &Pattern::new("", MatchMode::Literal).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -430,15 +430,7 @@ mod tests {
 
     #[test]
     fn invalid_regex_returns_error() {
-        let content = "hello\n";
-        let result = find_matches_in_content(
-            content,
-            "[invalid",
-            MatchMode::Regex,
-            &AtomicUsize::new(0),
-            usize::MAX,
-        );
-        assert!(result.is_err());
+        assert!(Pattern::new("[invalid", MatchMode::Regex).is_err());
     }
 
     #[test]
@@ -446,8 +438,7 @@ mod tests {
         let content = "foo\nbar\nbaz\n";
         let matches = find_matches_in_content(
             content,
-            r"foo\nbar",
-            MatchMode::RegexMultiline,
+            &Pattern::new(r"foo\nbar", MatchMode::RegexMultiline).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -472,8 +463,7 @@ mod tests {
         let content = "foo\nbar\nbaz\nqux\n";
         let matches = find_matches_in_content(
             content,
-            r"foo\nbar",
-            MatchMode::RegexMultiline,
+            &Pattern::new(r"foo\nbar", MatchMode::RegexMultiline).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -489,8 +479,7 @@ mod tests {
         let content = "hello world\n";
         let matches = find_matches_in_content(
             content,
-            r"hello",
-            MatchMode::RegexMultiline,
+            &Pattern::new("hello", MatchMode::RegexMultiline).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )
@@ -504,8 +493,7 @@ mod tests {
         let content = "hello foo world\n";
         let matches = find_matches_in_content(
             content,
-            "foo",
-            MatchMode::Literal,
+            &Pattern::new("foo", MatchMode::Literal).unwrap(),
             &AtomicUsize::new(0),
             usize::MAX,
         )

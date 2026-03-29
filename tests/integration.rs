@@ -4,7 +4,7 @@ use std::{fs, io::Write as _, sync::atomic::AtomicUsize};
 
 use swpui::{
     replace::{apply_replacements, effective_replacement, write_file},
-    search::find_matches_in_content,
+    search::{Pattern, find_matches_in_content},
     types::MatchMode,
     utils::{hash_file, is_file_stale},
 };
@@ -30,8 +30,7 @@ fn full_search_and_replace_workflow() {
 
     let matches = find_matches_in_content(
         &content,
-        "hello",
-        MatchMode::Literal,
+        &Pattern::new("hello", MatchMode::Literal).unwrap(),
         &AtomicUsize::new(0),
         usize::MAX,
     )
@@ -62,8 +61,7 @@ fn regex_search_and_replace() {
     let content = "foo123 bar456 foo789\n";
     let matches = find_matches_in_content(
         content,
-        r"foo\d+",
-        MatchMode::Regex,
+        &Pattern::new(r"foo\d+", MatchMode::Regex).unwrap(),
         &AtomicUsize::new(0),
         usize::MAX,
     )
@@ -78,8 +76,7 @@ fn skip_preserves_matches() {
     let content = "aaa bbb aaa\n";
     let mut matches = find_matches_in_content(
         content,
-        "aaa",
-        MatchMode::Literal,
+        &Pattern::new("aaa", MatchMode::Literal).unwrap(),
         &AtomicUsize::new(0),
         usize::MAX,
     )
@@ -100,8 +97,7 @@ fn multiline_search_and_replace_workflow() {
 
     let matches = find_matches_in_content(
         &content,
-        r"bar\nbaz",
-        MatchMode::RegexMultiline,
+        &Pattern::new(r"bar\nbaz", MatchMode::RegexMultiline).unwrap(),
         &AtomicUsize::new(0),
         usize::MAX,
     )
