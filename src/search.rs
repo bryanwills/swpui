@@ -53,6 +53,122 @@ impl<'a> Pattern<'a> {
     }
 }
 
+pub struct SearchWorker {
+    root: PathBuf,
+    cmd_rx: Receiver<SearchRequest>,
+    result_tx: Sender<SearchResult>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl SearchWorker {
+    pub fn new(
+        root: PathBuf,
+        cmd_rx: Receiver<SearchRequest>,
+        result_tx: Sender<SearchResult>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            root,
+            cmd_rx,
+            result_tx,
+            cancelled,
+        }
+    }
+
+    pub fn run(self) {
+        while let Ok(mut request) = self.cmd_rx.recv() {
+            // skip to the latest queued request in case there are multiple
+            // this makes cancellation faster
+            while let Ok(newer) = self.cmd_rx.try_recv() {
+                request = newer;
+            }
+            self.cancelled.store(false, Ordering::Relaxed);
+            self.execute_search(&request);
+        }
+    }
+
+    fn execute_search(&self, request: &SearchRequest) {
+        // validate regex upfront before walking files
+        let pattern = match Pattern::new(&request.pattern, request.mode) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                let _ = self.result_tx.send(SearchResult::Error {
+                    generation: request.generation,
+                    message: e.to_string(),
+                });
+                return;
+            }
+        };
+
+        let walker = WalkBuilder::new(&self.root)
+            .filter_entry(|entry| {
+                !(entry.path().is_dir() && entry.path().file_name().unwrap_or_default() == ".git")
+            })
+            .hidden(false)
+            .build_parallel();
+        let cancelled = &self.cancelled;
+        let result_tx = &self.result_tx;
+        let match_count = &AtomicUsize::new(0);
+        walker.run(|| {
+            let result_tx = result_tx.clone();
+            let pattern = Arc::clone(&pattern);
+            Box::new(move |entry| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
+                if match_count.load(Ordering::Relaxed) >= MAX_MATCHES {
+                    return WalkState::Quit;
+                }
+
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    return WalkState::Continue;
+                }
+
+                let Ok(content) = fs::read_to_string(entry.path()) else {
+                    return WalkState::Continue;
+                };
+
+                let Ok(matches) =
+                    find_matches_in_content(&content, &pattern, match_count, MAX_MATCHES)
+                else {
+                    return WalkState::Continue;
+                };
+
+                if matches.is_empty() {
+                    return WalkState::Continue;
+                }
+
+                let content_hash = hash_content(&mut content.as_bytes());
+                let file_matches = FileMatches {
+                    path: entry.path().to_path_buf(),
+                    matches,
+                    content_hash,
+                };
+                if result_tx
+                    .send(SearchResult::FileMatches {
+                        generation: request.generation,
+                        file_matches,
+                    })
+                    .is_err()
+                {
+                    return WalkState::Quit;
+                }
+
+                WalkState::Continue
+            })
+        });
+        let truncated = match_count.load(Ordering::Relaxed) >= MAX_MATCHES;
+        let _ = self.result_tx.send(SearchResult::Complete {
+            generation: request.generation,
+            truncated,
+        });
+    }
+}
+
 pub fn find_matches_in_content(
     content: &str,
     pattern: &Pattern,
@@ -188,122 +304,6 @@ fn build_match_info(
         context_after,
         skip: false,
         kind,
-    }
-}
-
-pub struct SearchWorker {
-    root: PathBuf,
-    cmd_rx: Receiver<SearchRequest>,
-    result_tx: Sender<SearchResult>,
-    cancelled: Arc<AtomicBool>,
-}
-
-impl SearchWorker {
-    pub fn new(
-        root: PathBuf,
-        cmd_rx: Receiver<SearchRequest>,
-        result_tx: Sender<SearchResult>,
-        cancelled: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            root,
-            cmd_rx,
-            result_tx,
-            cancelled,
-        }
-    }
-
-    pub fn run(self) {
-        while let Ok(mut request) = self.cmd_rx.recv() {
-            // skip to the latest queued request in case there are multiple
-            // this makes cancellation faster
-            while let Ok(newer) = self.cmd_rx.try_recv() {
-                request = newer;
-            }
-            self.cancelled.store(false, Ordering::Relaxed);
-            self.execute_search(&request);
-        }
-    }
-
-    fn execute_search(&self, request: &SearchRequest) {
-        // validate regex upfront before walking files
-        let pattern = match Pattern::new(&request.pattern, request.mode) {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                let _ = self.result_tx.send(SearchResult::Error {
-                    generation: request.generation,
-                    message: e.to_string(),
-                });
-                return;
-            }
-        };
-
-        let walker = WalkBuilder::new(&self.root)
-            .filter_entry(|entry| {
-                !(entry.path().is_dir() && entry.path().file_name().unwrap_or_default() == ".git")
-            })
-            .hidden(false)
-            .build_parallel();
-        let cancelled = &self.cancelled;
-        let result_tx = &self.result_tx;
-        let match_count = &AtomicUsize::new(0);
-        walker.run(|| {
-            let result_tx = result_tx.clone();
-            let pattern = Arc::clone(&pattern);
-            Box::new(move |entry| {
-                if cancelled.load(Ordering::Relaxed) {
-                    return WalkState::Quit;
-                }
-                if match_count.load(Ordering::Relaxed) >= MAX_MATCHES {
-                    return WalkState::Quit;
-                }
-
-                let Ok(entry) = entry else {
-                    return WalkState::Continue;
-                };
-
-                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                    return WalkState::Continue;
-                }
-
-                let Ok(content) = fs::read_to_string(entry.path()) else {
-                    return WalkState::Continue;
-                };
-
-                let Ok(matches) =
-                    find_matches_in_content(&content, &pattern, match_count, MAX_MATCHES)
-                else {
-                    return WalkState::Continue;
-                };
-
-                if matches.is_empty() {
-                    return WalkState::Continue;
-                }
-
-                let content_hash = hash_content(&mut content.as_bytes());
-                let file_matches = FileMatches {
-                    path: entry.path().to_path_buf(),
-                    matches,
-                    content_hash,
-                };
-                if result_tx
-                    .send(SearchResult::FileMatches {
-                        generation: request.generation,
-                        file_matches,
-                    })
-                    .is_err()
-                {
-                    return WalkState::Quit;
-                }
-
-                WalkState::Continue
-            })
-        });
-        let truncated = match_count.load(Ordering::Relaxed) >= MAX_MATCHES;
-        let _ = self.result_tx.send(SearchResult::Complete {
-            generation: request.generation,
-            truncated,
-        });
     }
 }
 
