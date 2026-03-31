@@ -1,21 +1,25 @@
 use std::{
     fs,
+    num::NonZero,
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::{self, Receiver, Sender},
     },
 };
 
+pub const MAX_FILES: usize = 100_000;
 pub const MAX_MATCHES: usize = 100_000;
 
 use ignore::{WalkBuilder, WalkState};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use regex::Regex;
 
 use crate::{
     types::{
         ContextLine, FileMatches, MatchInfo, MatchKind, MatchMode, SearchRequest, SearchResult,
+        WorkerCommand,
     },
     utils::hash_content,
 };
@@ -55,40 +59,95 @@ impl<'a> Pattern<'a> {
 
 pub struct SearchWorker {
     root: PathBuf,
-    cmd_rx: Receiver<SearchRequest>,
+    cmd_rx: Receiver<WorkerCommand>,
     result_tx: Sender<SearchResult>,
     cancelled: Arc<AtomicBool>,
+    file_list: Vec<PathBuf>,
+    pool: rayon::ThreadPool,
 }
 
 impl SearchWorker {
     pub fn new(
         root: PathBuf,
-        cmd_rx: Receiver<SearchRequest>,
+        cmd_rx: Receiver<WorkerCommand>,
         result_tx: Sender<SearchResult>,
         cancelled: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, NonZero::get)
+            .min(12);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?;
+        Ok(Self {
             root,
             cmd_rx,
             result_tx,
             cancelled,
+            file_list: Vec::new(),
+            pool,
+        })
+    }
+
+    pub fn run(mut self) {
+        self.walk_files();
+        while let Ok(mut cmd) = self.cmd_rx.recv() {
+            // skip to the latest queued command
+            while let Ok(newer) = self.cmd_rx.try_recv() {
+                cmd = newer;
+            }
+            match cmd {
+                WorkerCommand::Search(request) => {
+                    self.cancelled.store(false, Ordering::Relaxed);
+                    self.execute_search(&request);
+                }
+                WorkerCommand::Rebuild => {
+                    self.walk_files();
+                }
+            }
         }
     }
 
-    pub fn run(self) {
-        while let Ok(mut request) = self.cmd_rx.recv() {
-            // skip to the latest queued request in case there are multiple
-            // this makes cancellation faster
-            while let Ok(newer) = self.cmd_rx.try_recv() {
-                request = newer;
-            }
-            self.cancelled.store(false, Ordering::Relaxed);
-            self.execute_search(&request);
-        }
+    fn walk_files(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        let threads = std::thread::available_parallelism()
+            .map_or(1, NonZero::get)
+            .min(12);
+        let walker = WalkBuilder::new(&self.root)
+            .filter_entry(|entry| {
+                !(entry.path().is_dir() && entry.path().file_name().unwrap_or_default() == ".git")
+            })
+            .hidden(false)
+            .threads(threads)
+            .build_parallel();
+        let file_count = &AtomicUsize::new(0);
+        walker.run(|| {
+            let tx = tx.clone();
+            Box::new(move |entry| {
+                if file_count.load(Ordering::Relaxed) >= MAX_FILES {
+                    return WalkState::Quit;
+                }
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    return WalkState::Continue;
+                }
+                file_count.fetch_add(1, Ordering::Relaxed);
+                let _ = tx.send(entry.into_path());
+                WalkState::Continue
+            })
+        });
+        drop(tx);
+        self.file_list = rx.into_iter().collect();
+        let count = self.file_list.len();
+        let _ = self.result_tx.send(SearchResult::FileListReady {
+            count,
+            truncated: count >= MAX_FILES,
+        });
     }
 
     fn execute_search(&self, request: &SearchRequest) {
-        // validate regex upfront before walking files
         let pattern = match Pattern::new(&request.pattern, request.mode) {
             Ok(p) => Arc::new(p),
             Err(e) => {
@@ -100,67 +159,44 @@ impl SearchWorker {
             }
         };
 
-        let walker = WalkBuilder::new(&self.root)
-            .filter_entry(|entry| {
-                !(entry.path().is_dir() && entry.path().file_name().unwrap_or_default() == ".git")
-            })
-            .hidden(false)
-            .build_parallel();
+        let match_count = AtomicUsize::new(0);
         let cancelled = &self.cancelled;
         let result_tx = &self.result_tx;
-        let match_count = &AtomicUsize::new(0);
-        walker.run(|| {
-            let result_tx = result_tx.clone();
-            let pattern = Arc::clone(&pattern);
-            Box::new(move |entry| {
-                if cancelled.load(Ordering::Relaxed) {
-                    return WalkState::Quit;
-                }
-                if match_count.load(Ordering::Relaxed) >= MAX_MATCHES {
-                    return WalkState::Quit;
+        let file_list = &self.file_list;
+        self.pool.install(|| {
+            let _ = file_list.par_iter().try_for_each(|path| {
+                if cancelled.load(Ordering::Relaxed)
+                    || match_count.load(Ordering::Relaxed) >= MAX_MATCHES
+                {
+                    return Err(());
                 }
 
-                let Ok(entry) = entry else {
-                    return WalkState::Continue;
-                };
-
-                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                    return WalkState::Continue;
-                }
-
-                let Ok(content) = fs::read_to_string(entry.path()) else {
-                    return WalkState::Continue;
+                let Ok(content) = fs::read_to_string(path) else {
+                    return Ok(());
                 };
 
                 let Ok(matches) =
-                    find_matches_in_content(&content, &pattern, match_count, MAX_MATCHES)
+                    find_matches_in_content(&content, &pattern, &match_count, MAX_MATCHES)
                 else {
-                    return WalkState::Continue;
+                    return Ok(());
                 };
 
-                if matches.is_empty() {
-                    return WalkState::Continue;
-                }
-
-                let content_hash = hash_content(&mut content.as_bytes());
-                let file_matches = FileMatches {
-                    path: entry.path().to_path_buf(),
-                    matches,
-                    content_hash,
-                };
-                if result_tx
-                    .send(SearchResult::FileMatches {
+                if !matches.is_empty() {
+                    let content_hash = hash_content(&mut content.as_bytes());
+                    let _ = result_tx.send(SearchResult::FileMatches {
                         generation: request.generation,
-                        file_matches,
-                    })
-                    .is_err()
-                {
-                    return WalkState::Quit;
+                        file_matches: FileMatches {
+                            path: path.clone(),
+                            matches,
+                            content_hash,
+                        },
+                    });
                 }
 
-                WalkState::Continue
-            })
+                Ok(())
+            });
         });
+
         let truncated = match_count.load(Ordering::Relaxed) >= MAX_MATCHES;
         let _ = self.result_tx.send(SearchResult::Complete {
             generation: request.generation,
@@ -508,15 +544,16 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let worker = SearchWorker::new(dir.path().to_path_buf(), cmd_rx, result_tx, cancelled);
+        let worker =
+            SearchWorker::new(dir.path().to_path_buf(), cmd_rx, result_tx, cancelled).unwrap();
         let handle = thread::spawn(move || worker.run());
 
         cmd_tx
-            .send(SearchRequest {
+            .send(WorkerCommand::Search(SearchRequest {
                 pattern: "foo".to_string(),
                 mode: MatchMode::Literal,
                 generation: 1,
-            })
+            }))
             .unwrap();
 
         let mut got_file = false;
@@ -534,6 +571,7 @@ mod tests {
                     assert_eq!(generation, 1);
                     break;
                 }
+                SearchResult::FileListReady { .. } => {}
                 SearchResult::Error { .. } => panic!("unexpected error"),
             }
         }
@@ -558,26 +596,27 @@ mod tests {
             cmd_rx,
             result_tx,
             cancelled.clone(),
-        );
+        )
+        .unwrap();
         let handle = thread::spawn(move || worker.run());
 
         // send first request then immediately cancel and send second
         cmd_tx
-            .send(SearchRequest {
+            .send(WorkerCommand::Search(SearchRequest {
                 pattern: "needle".to_string(),
                 mode: MatchMode::Literal,
                 generation: 1,
-            })
+            }))
             .unwrap();
 
         cancelled.store(true, Ordering::Relaxed);
 
         cmd_tx
-            .send(SearchRequest {
+            .send(WorkerCommand::Search(SearchRequest {
                 pattern: "needle".to_string(),
                 mode: MatchMode::Literal,
                 generation: 2,
-            })
+            }))
             .unwrap();
 
         // drain results; we should eventually get Complete(2)

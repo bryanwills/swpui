@@ -73,7 +73,16 @@ pub struct SearchRequest {
     pub generation: u64,
 }
 
+pub enum WorkerCommand {
+    Search(SearchRequest),
+    Rebuild,
+}
+
 pub enum SearchResult {
+    FileListReady {
+        count: usize,
+        truncated: bool,
+    },
     FileMatches {
         generation: u64,
         file_matches: FileMatches,

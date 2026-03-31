@@ -26,7 +26,7 @@ use crate::{
     replace,
     search::SearchWorker,
     spinner::SpinnerState,
-    types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult},
+    types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult, WorkerCommand},
     ui, utils,
 };
 
@@ -53,22 +53,21 @@ pub struct App {
     generation: u64,
     last_keystroke: Option<Instant>,
     pending_search: bool,
-    cmd_tx: mpsc::Sender<SearchRequest>,
+    cmd_tx: mpsc::Sender<WorkerCommand>,
     result_rx: mpsc::Receiver<SearchResult>,
     cancelled: Arc<AtomicBool>,
 }
 
 impl App {
-    #[must_use]
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf) -> anyhow::Result<Self> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        let worker = SearchWorker::new(root.clone(), cmd_rx, result_tx, Arc::clone(&cancelled));
+        let worker = SearchWorker::new(root.clone(), cmd_rx, result_tx, Arc::clone(&cancelled))?;
         thread::spawn(move || worker.run());
 
-        Self {
+        Ok(Self {
             root,
             search_input: TextInputState::new(),
             replace_input: TextInputState::new(),
@@ -90,7 +89,7 @@ impl App {
             cmd_tx,
             result_rx,
             cancelled,
-        }
+        })
     }
 
     pub fn selected_file(&self) -> usize {
@@ -137,7 +136,7 @@ impl App {
                     generation,
                     truncated,
                 } if generation == self.generation => {
-                    self.results.sort_by(|a, b| a.path.cmp(&b.path));
+                    self.results.sort_unstable_by(|a, b| a.path.cmp(&b.path));
                     self.searching = false;
                     self.truncated = truncated;
                     if truncated {
@@ -152,6 +151,11 @@ impl App {
                     self.status_message = Some(message);
                     self.searching = false;
                     self.search_input.set_invalid(true);
+                }
+                SearchResult::FileListReady { count, truncated } => {
+                    if truncated {
+                        self.status_message = Some(format!("File list capped at {count} files"));
+                    }
                 }
                 SearchResult::FileMatches { .. }
                 | SearchResult::Complete { .. }
@@ -193,11 +197,11 @@ impl App {
         self.file_list.select(Some(0));
         self.selected_match = 0;
         self.preview_scroll.clear();
-        let _ = self.cmd_tx.send(SearchRequest {
+        let _ = self.cmd_tx.send(WorkerCommand::Search(SearchRequest {
             pattern: pattern.to_string(),
             mode: self.match_mode,
             generation: self.generation,
-        });
+        }));
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
