@@ -22,12 +22,15 @@ use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
 };
 
+use tracing::debug;
+
 use crate::{
     replace,
     search::SearchWorker,
     spinner::SpinnerState,
     types::{FileMatches, MatchMode, Pane, SearchRequest, SearchResult, WorkerCommand},
-    ui, utils,
+    ui,
+    utils::{self, results_mem_bytes},
 };
 
 const DEBOUNCE: Duration = Duration::from_millis(100);
@@ -139,8 +142,17 @@ impl App {
                     self.results.sort_unstable_by(|a, b| a.path.cmp(&b.path));
                     self.searching = false;
                     self.truncated = truncated;
+                    let total: usize = self.results.iter().map(|fm| fm.matches.len()).sum();
+                    debug!(
+                        generation,
+                        files = self.results.len(),
+                        results_capacity = self.results.capacity(),
+                        results_mem_bytes = results_mem_bytes(&self.results),
+                        total_matches = total,
+                        truncated,
+                        "received search complete"
+                    );
                     if truncated {
-                        let total: usize = self.results.iter().map(|fm| fm.matches.len()).sum();
                         self.status_message = Some(format!("Results capped at {total} matches"));
                     }
                 }
@@ -182,6 +194,12 @@ impl App {
     }
 
     fn dispatch_search(&mut self) {
+        debug!(
+            old_len = self.results.len(),
+            old_capacity = self.results.capacity(),
+            old_mem_bytes = results_mem_bytes(&self.results),
+            "clearing results"
+        );
         self.results.clear();
         self.status_message = None;
         self.truncated = false;

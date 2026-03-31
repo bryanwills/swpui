@@ -7,6 +7,8 @@ use std::{
 use sha2::{Digest as _, Sha256};
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr};
 
+use crate::types::{ContextLine, FileMatches, MatchInfo, MatchKind};
+
 pub struct TruncatedLine<'a> {
     pub before: &'a str,
     pub matched: &'a str,
@@ -237,6 +239,11 @@ pub fn is_file_stale(path: impl AsRef<Path>, original_hash: [u8; 32]) -> anyhow:
     Ok(hash_file(path)? != original_hash)
 }
 
+/// Logging helper to calculate the size in memory the search results.
+pub fn results_mem_bytes(results: &[FileMatches]) -> usize {
+    size_of_val(results) + results.iter().map(file_matches_mem_bytes).sum::<usize>()
+}
+
 fn chars_within_width(chars: impl Iterator<Item = char>, max_cols: usize) -> (usize, usize) {
     let mut total = 0;
     let count = chars
@@ -358,6 +365,34 @@ fn slice_start(s: &str, max_cols: usize) -> &str {
     let (char_count, _) = chars_within_width(s.chars(), max_cols);
     let byte_end = s.char_indices().nth(char_count).map_or(s.len(), |(i, _)| i);
     &s[..byte_end]
+}
+
+fn context_mem_bytes(ctx: &Vec<ContextLine>) -> usize {
+    ctx.capacity() * size_of::<ContextLine>()
+        + ctx.iter().map(|c| c.content.capacity()).sum::<usize>()
+}
+
+fn match_kind_mem_bytes(kind: &MatchKind) -> usize {
+    match kind {
+        MatchKind::SingleLine { line_content, .. } => line_content.capacity(),
+        MatchKind::MultiLine { matched_lines, .. } => {
+            matched_lines.capacity() * size_of::<String>()
+                + matched_lines.iter().map(String::capacity).sum::<usize>()
+        }
+    }
+}
+
+fn match_mem_bytes(m: &MatchInfo) -> usize {
+    m.matched_text.capacity()
+        + context_mem_bytes(&m.context_before)
+        + context_mem_bytes(&m.context_after)
+        + match_kind_mem_bytes(&m.kind)
+}
+
+fn file_matches_mem_bytes(fm: &FileMatches) -> usize {
+    fm.path.capacity()
+        + fm.matches.capacity() * size_of::<MatchInfo>()
+        + fm.matches.iter().map(match_mem_bytes).sum::<usize>()
 }
 
 #[cfg(test)]

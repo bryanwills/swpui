@@ -15,6 +15,7 @@ pub const MAX_MATCHES: usize = 100_000;
 use ignore::{WalkBuilder, WalkState};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use regex::Regex;
+use tracing::debug;
 
 use crate::{
     types::{
@@ -25,6 +26,7 @@ use crate::{
 };
 
 pub const CONTEXT_LINES: usize = 2;
+pub const MAX_CONTEXT_CHARS: usize = 160;
 
 #[derive(Clone, Debug)]
 pub enum Pattern<'a> {
@@ -141,13 +143,27 @@ impl SearchWorker {
         drop(tx);
         self.file_list = rx.into_iter().collect();
         let count = self.file_list.len();
-        let _ = self.result_tx.send(SearchResult::FileListReady {
-            count,
-            truncated: count >= MAX_FILES,
-        });
+        let truncated = count >= MAX_FILES;
+        debug!(
+            len = count,
+            capacity = self.file_list.capacity(),
+            mem_bytes = self.file_list.capacity() * size_of::<PathBuf>()
+                + self.file_list.iter().map(PathBuf::capacity).sum::<usize>(),
+            truncated,
+            "walk_files complete"
+        );
+        let _ = self
+            .result_tx
+            .send(SearchResult::FileListReady { count, truncated });
     }
 
     fn execute_search(&self, request: &SearchRequest) {
+        debug!(
+            pattern = %request.pattern,
+            generation = request.generation,
+            file_count = self.file_list.len(),
+            "search started"
+        );
         let pattern = match Pattern::new(&request.pattern, request.mode) {
             Ok(p) => Arc::new(p),
             Err(e) => {
@@ -197,7 +213,22 @@ impl SearchWorker {
             });
         });
 
-        let truncated = match_count.load(Ordering::Relaxed) >= MAX_MATCHES;
+        let total_matches = match_count.load(Ordering::Relaxed);
+        let truncated = total_matches >= MAX_MATCHES;
+        let was_cancelled = cancelled.load(Ordering::Relaxed);
+        if was_cancelled {
+            debug!(generation = request.generation, "search cancelled");
+        } else if truncated {
+            debug!(
+                generation = request.generation,
+                total_matches, "search hit match limit"
+            );
+        } else {
+            debug!(
+                generation = request.generation,
+                total_matches, "search complete"
+            );
+        }
         let _ = self.result_tx.send(SearchResult::Complete {
             generation: request.generation,
             truncated,
@@ -267,6 +298,66 @@ fn find_byte_ranges(content: &str, pattern: &Pattern) -> Vec<(usize, usize)> {
     }
 }
 
+fn ceil_char_boundary(s: &str, pos: usize) -> usize {
+    let mut p = pos;
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+fn floor_char_boundary(s: &str, pos: usize) -> usize {
+    let mut p = pos.min(s.len());
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+/// Truncate from the right, keeping at least `min_bytes` from the start.
+fn truncate_right(s: &str, min_bytes: usize) -> String {
+    let limit = MAX_CONTEXT_CHARS.max(min_bytes);
+    if s.len() <= limit {
+        return s.to_string();
+    }
+    let mut end = floor_char_boundary(s, limit);
+    if end < min_bytes {
+        end = ceil_char_boundary(s, min_bytes);
+    }
+    if end >= s.len() {
+        return s.to_string();
+    }
+    format!("{}\u{2026}", &s[..end])
+}
+
+/// Truncate a match line, keeping `MAX_CONTEXT_LINE_CHARS` bytes of context on each side of the
+/// match region `[col_start..col_end]`.
+/// Returns `(truncated_line, new_col_start, new_col_end)`.
+fn truncate_around_match(line: &str, col_start: usize, col_end: usize) -> (String, usize, usize) {
+    let keep_start = if col_start <= MAX_CONTEXT_CHARS {
+        0
+    } else {
+        ceil_char_boundary(line, col_start - MAX_CONTEXT_CHARS)
+    };
+
+    let after_match = line.len() - col_end;
+    let keep_end = if after_match <= MAX_CONTEXT_CHARS {
+        line.len()
+    } else {
+        floor_char_boundary(line, col_end + MAX_CONTEXT_CHARS)
+    };
+
+    if keep_start == 0 && keep_end == line.len() {
+        return (line.to_string(), col_start, col_end);
+    }
+
+    (
+        line[keep_start..keep_end].to_string(),
+        col_start - keep_start,
+        col_end - keep_start,
+    )
+}
+
 fn build_match_info(
     content: &str,
     line_starts: &[usize],
@@ -286,7 +377,7 @@ fn build_match_info(
     let context_before: Vec<ContextLine> = (line_idx.saturating_sub(CONTEXT_LINES)..line_idx)
         .map(|i| ContextLine {
             line_number: i + 1,
-            content: get_line(i).to_string(),
+            content: truncate_right(get_line(i), 0),
         })
         .collect();
 
@@ -305,27 +396,42 @@ fn build_match_info(
         ..=(line_idx_end + CONTEXT_LINES).min(num_lines.saturating_sub(1)))
         .map(|i| ContextLine {
             line_number: i + 1,
-            content: get_line(i).to_string(),
+            content: truncate_right(get_line(i), 0),
         })
         .collect();
 
     let line_start_byte = line_starts[line_idx];
     let last_line_byte = line_starts[line_idx_end];
     let last_line_str = get_line(line_idx_end);
-    let match_col_start = byte_start - line_start_byte;
-    let match_col_end = (byte_end - last_line_byte).min(last_line_str.len());
+    let mut match_col_start = byte_start - line_start_byte;
+    let mut match_col_end = (byte_end - last_line_byte).min(last_line_str.len());
 
     let kind = if line_idx_end == line_idx {
+        let (line_content, new_start, new_end) =
+            truncate_around_match(last_line_str, match_col_start, match_col_end);
+        match_col_start = new_start;
+        match_col_end = new_end;
         MatchKind::SingleLine {
             line_number,
-            line_content: last_line_str.to_string(),
+            line_content,
         }
     } else {
         MatchKind::MultiLine {
             line_number_start: line_idx + 1,
             line_number_end: line_idx_end + 1,
             matched_lines: (line_idx..=line_idx_end)
-                .map(|i| get_line(i).to_string())
+                .map(|i| {
+                    let line = get_line(i);
+                    if i == line_idx {
+                        // first line: preserve prefix + some match content
+                        truncate_right(line, match_col_start + MAX_CONTEXT_CHARS)
+                    } else if i == line_idx_end {
+                        // last line: preserve match content + some suffix
+                        truncate_right(line, match_col_end + MAX_CONTEXT_CHARS)
+                    } else {
+                        truncate_right(line, 0)
+                    }
+                })
                 .collect(),
         }
     };
@@ -635,5 +741,64 @@ mod tests {
 
         drop(cmd_tx);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn single_line_match_truncated_around_match() {
+        // build a line where the match is past MAX_CONTEXT_LINE_CHARS
+        let prefix = "a".repeat(200);
+        let suffix = "b".repeat(200);
+        let content = format!("{prefix}NEEDLE{suffix}\n");
+        let all_matches = find_matches_in_content(
+            &content,
+            &Pattern::new("NEEDLE", MatchMode::Literal).unwrap(),
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(all_matches.len(), 1);
+        let m = &all_matches[0];
+        let MatchKind::SingleLine { line_content, .. } = &m.kind else {
+            panic!("expected SingleLine");
+        };
+        // col offsets must be valid
+        let before = &line_content[..m.match_col_start];
+        let matched = &line_content[m.match_col_start..m.match_col_end];
+        let after = &line_content[m.match_col_end..];
+        assert_eq!(matched, "NEEDLE");
+        // should have up to MAX_CONTEXT_LINE_CHARS bytes of context each side
+        assert_eq!(before.len(), MAX_CONTEXT_CHARS);
+        assert_eq!(after.len(), MAX_CONTEXT_CHARS);
+        // total: 160 + 6 + 160 = 326
+        assert_eq!(line_content.len(), MAX_CONTEXT_CHARS * 2 + 6);
+    }
+
+    #[test]
+    fn multiline_match_preserves_col_offsets() {
+        // first line has a long prefix, last line has a long suffix
+        let prefix = "x".repeat(200);
+        let suffix = "y".repeat(200);
+        let content = format!("{prefix}START\nMIDDLE\nEND{suffix}\n");
+        let matches = find_matches_in_content(
+            &content,
+            &Pattern::new(r"START\nMIDDLE\nEND", MatchMode::RegexMultiline).unwrap(),
+            &AtomicUsize::new(0),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        let m = &matches[0];
+        let MatchKind::MultiLine { matched_lines, .. } = &m.kind else {
+            panic!("expected MultiLine");
+        };
+        assert_eq!(matched_lines.len(), 3);
+        // first line: prefix must be fully preserved (match_col_start indexes into it)
+        let first_prefix = &matched_lines[0][..m.match_col_start];
+        assert_eq!(first_prefix, prefix);
+        // last line: suffix must be accessible via match_col_end
+        let last_suffix = &matched_lines[2][m.match_col_end..];
+        // suffix is truncated to MAX_CONTEXT_LINE_CHARS + ellipsis
+        assert!(last_suffix.starts_with("yyy"));
+        assert!(!suffix.is_empty());
     }
 }
