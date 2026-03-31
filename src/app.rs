@@ -200,7 +200,7 @@ impl App {
             old_mem_bytes = results_mem_bytes(&self.results),
             "clearing results"
         );
-        self.results.clear();
+        Self::drop_results_in_background(&mut self.results);
         self.status_message = None;
         self.truncated = false;
         self.search_input.set_invalid(false);
@@ -389,8 +389,7 @@ impl App {
             }
         }
         if indices_to_remove.len() == self.results.len() {
-            // happy path, all replacements worked
-            self.results.clear();
+            Self::drop_results_in_background(&mut self.results);
         } else {
             for i in indices_to_remove.into_iter().rev() {
                 self.results.swap_remove(i);
@@ -461,6 +460,11 @@ impl App {
         let new_content = replace::apply_replacements(content, &fm.matches, replacement, mode);
         replace::write_file(&fm.path, &new_content)?;
         Ok(())
+    }
+
+    fn drop_results_in_background(results: &mut Vec<FileMatches>) {
+        let old = std::mem::take(results);
+        thread::spawn(move || drop(old));
     }
 
     fn clamp_selection(&mut self) {
