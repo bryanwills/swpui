@@ -367,24 +367,22 @@ fn slice_start(s: &str, max_cols: usize) -> &str {
     &s[..byte_end]
 }
 
-fn context_mem_bytes(ctx: &Vec<ContextLine>) -> usize {
-    ctx.capacity() * size_of::<ContextLine>()
-        + ctx.iter().map(|c| c.content.capacity()).sum::<usize>()
+fn context_mem_bytes(ctx: &[ContextLine]) -> usize {
+    size_of_val(ctx) + ctx.iter().map(|c| c.content.len()).sum::<usize>()
 }
 
 fn match_kind_mem_bytes(kind: &MatchKind) -> usize {
     match kind {
-        MatchKind::SingleLine { line_content, .. } => line_content.capacity(),
+        MatchKind::SingleLine { line_content, .. } => line_content.len(),
         MatchKind::MultiLine { matched_lines, .. } => {
-            matched_lines.capacity() * size_of::<String>()
-                + matched_lines.iter().map(String::capacity).sum::<usize>()
+            matched_lines.len() * size_of::<Box<str>>()
+                + matched_lines.iter().map(|s| s.len()).sum::<usize>()
         }
     }
 }
 
 fn match_mem_bytes(m: &MatchInfo) -> usize {
-    m.matched_text.capacity()
-        + context_mem_bytes(&m.context_before)
+    context_mem_bytes(&m.context_before)
         + context_mem_bytes(&m.context_after)
         + match_kind_mem_bytes(&m.kind)
 }

@@ -191,11 +191,12 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
         return Line::default();
     };
     let before = &line_content[..m.match_col_start];
+    let matched = m.matched_text();
     let after = &line_content[m.match_col_end..];
     let dark_gray = Style::default().fg(Color::DarkGray);
 
     if m.skip {
-        let t = truncate_match_line(before, &m.matched_text, None, after, inner_width as usize);
+        let t = truncate_match_line(before, &matched, None, after, inner_width as usize);
         let mut spans = Vec::with_capacity(7);
         spans.push(Span::raw(" "));
         if t.left_ellipsis {
@@ -215,7 +216,7 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
     } else if !replacement.is_empty() {
         let t = truncate_match_line(
             before,
-            &m.matched_text,
+            &matched,
             Some(replacement),
             after,
             inner_width as usize,
@@ -246,7 +247,7 @@ fn build_match_line(m: &MatchInfo, replacement: &str, inner_width: u16) -> Line<
         }
         Line::from(spans)
     } else {
-        let t = truncate_match_line(before, &m.matched_text, None, after, inner_width as usize);
+        let t = truncate_match_line(before, &matched, None, after, inner_width as usize);
         let mut spans = Vec::with_capacity(5);
         spans.push(Span::raw(" "));
         if t.left_ellipsis {
@@ -299,7 +300,7 @@ fn build_context_lines(
 
 fn build_multiline_match_lines(
     m: &MatchInfo,
-    matched_lines: &[String],
+    matched_lines: &[Box<str>],
     effective_replacement: &str,
 ) -> Vec<Line<'static>> {
     let removed_style = Style::default().fg(Color::Red);
@@ -370,8 +371,9 @@ fn build_preview_lines(
         lines.push(build_match_header(m, is_selected));
         lines.extend(build_context_lines(&m.context_before));
 
+        let matched_text = m.matched_text();
         let effective_replacement = if mode == MatchMode::CaseAware {
-            case_aware_replacement(&m.matched_text, replacement)
+            case_aware_replacement(&matched_text, replacement)
         } else {
             Cow::Borrowed(replacement)
         };
@@ -524,23 +526,23 @@ mod tests {
     use super::*;
 
     fn make_multiline_match(
-        matched_lines: Vec<String>,
+        matched_lines: &[&str],
         match_col_start: usize,
         match_col_end: usize,
     ) -> MatchInfo {
+        let boxed_lines: Box<[Box<str>]> = matched_lines.iter().map(|s| Box::from(*s)).collect();
         MatchInfo {
             byte_offset_start: 0,
             byte_offset_end: 10,
-            matched_text: matched_lines.join("\n"),
             match_col_start,
             match_col_end,
-            context_before: vec![],
-            context_after: vec![],
+            context_before: Box::new([]),
+            context_after: Box::new([]),
             skip: false,
             kind: MatchKind::MultiLine {
                 line_number_start: 1,
-                line_number_end: matched_lines.len(),
-                matched_lines,
+                line_number_end: boxed_lines.len(),
+                matched_lines: boxed_lines,
             },
         }
     }
@@ -550,7 +552,7 @@ mod tests {
         let fm = FileMatches {
             path: PathBuf::from("test.rs"),
             matches: vec![make_multiline_match(
-                vec!["    foo".to_string(), "bar".to_string()],
+                &["    foo", "bar"],
                 4, // match starts (first line)
                 3, // match ends (last line)
             )],

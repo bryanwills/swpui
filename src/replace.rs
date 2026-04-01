@@ -66,7 +66,7 @@ pub fn apply_replacements(
 
     for m in active {
         let repl = if mode == MatchMode::CaseAware {
-            case_aware_replacement(&m.matched_text, replacement)
+            case_aware_replacement(&m.matched_text(), replacement)
         } else {
             Cow::Borrowed(replacement)
         };
@@ -147,15 +147,14 @@ mod tests {
         MatchInfo {
             byte_offset_start: start,
             byte_offset_end: end,
-            matched_text: String::new(),
             match_col_start: 0,
             match_col_end: 0,
-            context_before: vec![],
-            context_after: vec![],
+            context_before: Box::new([]),
+            context_after: Box::new([]),
             skip: false,
             kind: MatchKind::SingleLine {
                 line_number: 1,
-                line_content: String::new(),
+                line_content: Box::from(""),
             },
         }
     }
@@ -340,11 +339,21 @@ mod tests {
         let content = "Hello hello";
         let matches = vec![
             MatchInfo {
-                matched_text: "Hello".to_string(),
+                kind: MatchKind::SingleLine {
+                    line_number: 1,
+                    line_content: "Hello hello".into(),
+                },
+                match_col_start: 0,
+                match_col_end: 5,
                 ..make_match(0, 5)
             },
             MatchInfo {
-                matched_text: "hello".to_string(),
+                kind: MatchKind::SingleLine {
+                    line_number: 1,
+                    line_content: "Hello hello".into(),
+                },
+                match_col_start: 6,
+                match_col_end: 11,
                 ..make_match(6, 11)
             },
         ];

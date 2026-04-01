@@ -315,25 +315,25 @@ fn floor_char_boundary(s: &str, pos: usize) -> usize {
 }
 
 /// Truncate from the right, keeping at least `min_bytes` from the start.
-fn truncate_right(s: &str, min_bytes: usize) -> String {
+fn truncate_right(s: &str, min_bytes: usize) -> Box<str> {
     let limit = MAX_CONTEXT_CHARS.max(min_bytes);
     if s.len() <= limit {
-        return s.to_string();
+        return Box::from(s);
     }
     let mut end = floor_char_boundary(s, limit);
     if end < min_bytes {
         end = ceil_char_boundary(s, min_bytes);
     }
     if end >= s.len() {
-        return s.to_string();
+        return Box::from(s);
     }
-    format!("{}\u{2026}", &s[..end])
+    format!("{}\u{2026}", &s[..end]).into()
 }
 
 /// Truncate a match line, keeping `MAX_CONTEXT_LINE_CHARS` bytes of context on each side of the
 /// match region `[col_start..col_end]`.
 /// Returns `(truncated_line, new_col_start, new_col_end)`.
-fn truncate_around_match(line: &str, col_start: usize, col_end: usize) -> (String, usize, usize) {
+fn truncate_around_match(line: &str, col_start: usize, col_end: usize) -> (Box<str>, usize, usize) {
     let keep_start = if col_start <= MAX_CONTEXT_CHARS {
         0
     } else {
@@ -348,11 +348,11 @@ fn truncate_around_match(line: &str, col_start: usize, col_end: usize) -> (Strin
     };
 
     if keep_start == 0 && keep_end == line.len() {
-        return (line.to_string(), col_start, col_end);
+        return (Box::from(line), col_start, col_end);
     }
 
     (
-        line[keep_start..keep_end].to_string(),
+        Box::from(&line[keep_start..keep_end]),
         col_start - keep_start,
         col_end - keep_start,
     )
@@ -374,7 +374,7 @@ fn build_match_info(
 
     let line_number = line_idx + 1;
 
-    let context_before: Vec<ContextLine> = (line_idx.saturating_sub(CONTEXT_LINES)..line_idx)
+    let context_before: Box<[ContextLine]> = (line_idx.saturating_sub(CONTEXT_LINES)..line_idx)
         .map(|i| ContextLine {
             line_number: i + 1,
             content: truncate_right(get_line(i), 0),
@@ -392,7 +392,7 @@ fn build_match_info(
             .map_or(num_lines - 1, |pos| line_idx + pos)
     };
 
-    let context_after: Vec<ContextLine> = ((line_idx_end + 1)
+    let context_after: Box<[ContextLine]> = ((line_idx_end + 1)
         ..=(line_idx_end + CONTEXT_LINES).min(num_lines.saturating_sub(1)))
         .map(|i| ContextLine {
             line_number: i + 1,
@@ -423,10 +423,8 @@ fn build_match_info(
                 .map(|i| {
                     let line = get_line(i);
                     if i == line_idx {
-                        // first line: preserve prefix + some match content
                         truncate_right(line, match_col_start + MAX_CONTEXT_CHARS)
                     } else if i == line_idx_end {
-                        // last line: preserve match content + some suffix
                         truncate_right(line, match_col_end + MAX_CONTEXT_CHARS)
                     } else {
                         truncate_right(line, 0)
@@ -439,7 +437,6 @@ fn build_match_info(
     MatchInfo {
         byte_offset_start: byte_start,
         byte_offset_end: byte_end,
-        matched_text: content[byte_start..byte_end].to_string(),
         match_col_start,
         match_col_end,
         context_before,
@@ -479,7 +476,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].matched_text, "foo");
+        assert_eq!(&matches[0].matched_text(), "foo");
         assert!(matches!(
             matches[0].kind,
             MatchKind::SingleLine { line_number: 2, .. }
@@ -501,8 +498,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].matched_text, "hello world");
-        assert_eq!(matches[1].matched_text, "hello rust");
+        assert_eq!(&matches[0].matched_text(), "hello world");
+        assert_eq!(&matches[1].matched_text(), "hello rust");
     }
 
     #[test]
@@ -522,11 +519,11 @@ mod tests {
             MatchKind::SingleLine { line_number: 4, .. }
         ));
         assert_eq!(m.context_before.len(), CONTEXT_LINES);
-        assert_eq!(m.context_before[0].content, "b");
-        assert_eq!(m.context_before[1].content, "c");
+        assert_eq!(&*m.context_before[0].content, "b");
+        assert_eq!(&*m.context_before[1].content, "c");
         assert_eq!(m.context_after.len(), CONTEXT_LINES);
-        assert_eq!(m.context_after[0].content, "d");
-        assert_eq!(m.context_after[1].content, "e");
+        assert_eq!(&*m.context_after[0].content, "d");
+        assert_eq!(&*m.context_after[1].content, "e");
     }
 
     #[test]
@@ -595,7 +592,8 @@ mod tests {
             }
         ));
         if let MatchKind::MultiLine { matched_lines, .. } = &matches[0].kind {
-            assert_eq!(matched_lines, &["foo", "bar"]);
+            let lines: Vec<&str> = matched_lines.iter().map(|s| &**s).collect();
+            assert_eq!(lines, ["foo", "bar"]);
         }
     }
 
@@ -612,7 +610,7 @@ mod tests {
         .unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].context_after.len(), CONTEXT_LINES);
-        assert_eq!(matches[0].context_after[0].content, "baz");
+        assert_eq!(&*matches[0].context_after[0].content, "baz");
         assert_eq!(matches[0].context_after[0].line_number, 3);
     }
 
