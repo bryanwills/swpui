@@ -147,32 +147,50 @@ fn render_file_list(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let selected = app.file_list.selected();
-    let inner_width = block.inner(area).width as usize;
+    let inner = block.inner(area);
+    let inner_width = inner.width as usize;
+    let inner_height = inner.height as usize;
+    let total_items = app.results.len();
+
+    // set up scroll state before building items so we know the visible range
+    app.file_list.scroll.set_page_len(inner_height);
+    app.file_list
+        .scroll
+        .set_max_offset(total_items.saturating_sub(inner_height));
+    app.file_list.scroll_to_selected();
+
+    let offset = app.file_list.offset();
+    let visible_end = (offset + inner_height).min(total_items);
+
     let items: Vec<ListItem> = app
         .results
         .iter()
         .enumerate()
         .map(|(i, fm)| {
             let active = fm.active_match_count();
-            let total = fm.matches.len();
-            let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
-            let suffix = format!(" ({active}/{total})");
-            let label = format_file_entry(rel, &suffix, inner_width);
-            if Some(i) != selected && active == 0 {
-                ListItem::new(Line::styled(label, Style::default().fg(Color::DarkGray)))
+            let dimmed = Some(i) != selected && active == 0;
+
+            // only format paths for visible items
+            if i < offset || i >= visible_end {
+                let item = ListItem::new("");
+                if dimmed {
+                    item.style(Style::default().fg(Color::DarkGray))
+                } else {
+                    item
+                }
             } else {
-                ListItem::new(label)
+                let total = fm.matches.len();
+                let rel = fm.path.strip_prefix(&app.root).unwrap_or(&fm.path);
+                let suffix = format!(" ({active}/{total})");
+                let label = format_file_entry(rel, &suffix, inner_width);
+                if dimmed {
+                    ListItem::new(Line::styled(label, Style::default().fg(Color::DarkGray)))
+                } else {
+                    ListItem::new(label)
+                }
             }
         })
         .collect();
-
-    // set up scroll state so scroll_to_selected works before render
-    let inner_height = block.inner(area).height as usize;
-    app.file_list.scroll.set_page_len(inner_height);
-    app.file_list
-        .scroll
-        .set_max_offset(items.len().saturating_sub(inner_height));
-    app.file_list.scroll_to_selected();
 
     let select_style = Style::default()
         .fg(Color::Cyan)
