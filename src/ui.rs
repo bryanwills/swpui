@@ -362,6 +362,39 @@ fn build_multiline_match_lines(
     out
 }
 
+/// Count how many preview lines a multiline match produces without building them.
+fn count_multiline_match_lines(
+    m: &MatchInfo,
+    matched_lines: &[Box<str>],
+    replacement: &str,
+) -> usize {
+    if m.skip {
+        return matched_lines.len();
+    }
+    let mut n = matched_lines.len();
+    let prefix = &matched_lines[0][..m.match_col_start];
+    let suffix = matched_lines.last().map_or("", |l| &l[m.match_col_end..]);
+    if !replacement.is_empty() || !prefix.is_empty() || !suffix.is_empty() {
+        n += replacement.split('\n').count();
+    }
+    n
+}
+
+/// Count how many preview lines a single match entry produces (header + context + match lines).
+fn count_match_lines(m: &MatchInfo, replacement: &str) -> usize {
+    // header
+    let mut n = 1;
+    n += m.context_before.len();
+    match &m.kind {
+        MatchKind::SingleLine { .. } => n += 1,
+        MatchKind::MultiLine { matched_lines, .. } => {
+            n += count_multiline_match_lines(m, matched_lines, replacement);
+        }
+    }
+    n += m.context_after.len();
+    n
+}
+
 fn build_preview_lines(
     fm: &FileMatches,
     replacement: &str,
@@ -369,6 +402,7 @@ fn build_preview_lines(
     is_preview_focused: bool,
     selected_match: usize,
     inner_width: u16,
+    visible_range: Range<usize>,
 ) -> (Vec<Line<'static>>, Range<usize>) {
     let mut lines: Vec<Line<'static>> =
         Vec::with_capacity(fm.matches.len() * CONTEXT_LINES * 2 + 3);
@@ -386,29 +420,36 @@ fn build_preview_lines(
         }
 
         let match_start = lines.len();
-        lines.push(build_match_header(m, is_selected));
-        lines.extend(build_context_lines(&m.context_before));
 
-        let matched_text = m.matched_text();
-        let effective_replacement = if mode == MatchMode::CaseAware {
-            case_aware_replacement(&matched_text, replacement)
+        // skip expensive formatting for lines entirely outside the visible range
+        if lines.len() >= visible_range.end {
+            let n = count_match_lines(m, replacement);
+            lines.extend((0..n).map(|_| Line::default()));
         } else {
-            Cow::Borrowed(replacement)
-        };
-        match &m.kind {
-            MatchKind::SingleLine { .. } => {
-                lines.push(build_match_line(m, &effective_replacement, inner_width));
-            }
-            MatchKind::MultiLine { matched_lines, .. } => {
-                lines.extend(build_multiline_match_lines(
-                    m,
-                    matched_lines,
-                    &effective_replacement,
-                ));
-            }
-        }
+            lines.push(build_match_header(m, is_selected));
+            lines.extend(build_context_lines(&m.context_before));
 
-        lines.extend(build_context_lines(&m.context_after));
+            let matched_text = m.matched_text();
+            let effective_replacement = if mode == MatchMode::CaseAware {
+                case_aware_replacement(&matched_text, replacement)
+            } else {
+                Cow::Borrowed(replacement)
+            };
+            match &m.kind {
+                MatchKind::SingleLine { .. } => {
+                    lines.push(build_match_line(m, &effective_replacement, inner_width));
+                }
+                MatchKind::MultiLine { matched_lines, .. } => {
+                    lines.extend(build_multiline_match_lines(
+                        m,
+                        matched_lines,
+                        &effective_replacement,
+                    ));
+                }
+            }
+
+            lines.extend(build_context_lines(&m.context_after));
+        }
 
         if is_selected {
             selected_range = match_start..lines.len();
@@ -464,20 +505,41 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
     let raw_replacement = app.replace_input.text();
     let replacement = effective_replacement(raw_replacement, app.match_mode);
     let is_preview_focused = app.focused_pane == Pane::Preview;
-    let (lines, selected_range) = build_preview_lines(
+    let inner_height = inner.height as usize;
+
+    // first pass: count total lines and find selected range cheaply
+    let mut total_lines = 0;
+    let mut selected_range: Range<usize> = 0..0;
+    for (match_idx, m) in fm.matches.iter().enumerate() {
+        if match_idx > 0 {
+            total_lines += 1; // separator
+        }
+        let match_start = total_lines;
+        total_lines += count_match_lines(m, &replacement);
+        if is_preview_focused && match_idx == app.selected_match {
+            selected_range = match_start..total_lines;
+        }
+    }
+
+    // set up scroll state with counted totals so we know the visible offset
+    app.preview_scroll.set_page_len(inner_height);
+    app.preview_scroll
+        .set_max_offset(total_lines.saturating_sub(inner_height));
+    app.preview_scroll.scroll_to_range(selected_range);
+
+    let offset = app.preview_scroll.offset;
+    let visible_range = offset..offset + inner_height;
+
+    // second pass: build lines, skipping expensive formatting outside visible range
+    let (lines, _) = build_preview_lines(
         fm,
         &replacement,
         app.match_mode,
         is_preview_focused,
         app.selected_match,
         inner.width,
+        visible_range,
     );
-
-    // update scroll state and auto-scroll to keep selected match visible
-    app.preview_scroll.set_page_len(inner.height as usize);
-    app.preview_scroll
-        .set_max_offset(lines.len().saturating_sub(inner.height as usize));
-    app.preview_scroll.scroll_to_range(selected_range);
 
     let offset = app.preview_scroll.offset;
 
@@ -539,7 +601,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, status_area: Rect, hints_area
 mod tests {
     use std::path::PathBuf;
 
-    use crate::types::{FileMatches, MatchInfo, MatchKind, MatchMode};
+    use crate::types::{ContextLine, FileMatches, MatchInfo, MatchKind, MatchMode};
 
     use super::*;
 
@@ -565,6 +627,77 @@ mod tests {
         }
     }
 
+    fn make_single_line_match(line_content: &str, col_start: usize, col_end: usize) -> MatchInfo {
+        MatchInfo {
+            byte_offset_start: 0,
+            byte_offset_end: 10,
+            match_col_start: col_start,
+            match_col_end: col_end,
+            context_before: Box::new([]),
+            context_after: Box::new([]),
+            skip: false,
+            kind: MatchKind::SingleLine {
+                line_number: 1,
+                line_content: Box::from(line_content),
+            },
+        }
+    }
+
+    #[test]
+    fn count_single_line_match() {
+        // header + match line = 2
+        let m = make_single_line_match("hello world", 0, 5);
+        assert_eq!(count_match_lines(&m, ""), 2);
+    }
+
+    #[test]
+    fn count_single_line_with_context() {
+        let ctx = vec![
+            ContextLine {
+                line_number: 1,
+                content: Box::from("before"),
+            },
+            ContextLine {
+                line_number: 2,
+                content: Box::from("before2"),
+            },
+        ];
+        let mut m = make_single_line_match("hello world", 0, 5);
+        m.context_before = ctx.into();
+        m.context_after = vec![ContextLine {
+            line_number: 4,
+            content: Box::from("after"),
+        }]
+        .into();
+        // header(1) + context_before(2) + match(1) + context_after(1) = 5
+        assert_eq!(count_match_lines(&m, ""), 5);
+    }
+
+    #[test]
+    fn count_multiline_skipped() {
+        let mut m = make_multiline_match(&["foo", "bar", "baz"], 0, 3);
+        m.skip = true;
+        // header(1) + 3 matched lines
+        assert_eq!(count_match_lines(&m, "repl"), 4);
+    }
+
+    #[test]
+    fn count_multiline_with_replacement() {
+        let m = make_multiline_match(&["  foo", "bar"], 2, 3);
+        // header(1) + 2 removed + 1 replacement (single line, prefix non-empty) = 4
+        assert_eq!(count_match_lines(&m, "baz"), 4);
+        // multi-line replacement: "a\nb\nc" = 3 lines
+        assert_eq!(count_match_lines(&m, "a\nb\nc"), 6);
+    }
+
+    #[test]
+    fn count_multiline_empty_replacement_no_affixes() {
+        // match spans entire lines, so prefix and suffix are empty
+        let m = make_multiline_match(&["foo", "bar"], 0, 3);
+        // header(1) + 2 removed, no replacement lines (empty repl + empty prefix + empty suffix)
+        assert_eq!(count_match_lines(&m, ""), 3);
+    }
+
     #[test]
     fn multiline_single_replacement_line() {
         let fm = FileMatches {
@@ -576,7 +709,15 @@ mod tests {
             )],
             content_hash: [0; 32],
         };
-        let (lines, _) = build_preview_lines(&fm, "replacement", MatchMode::Literal, false, 0, 80);
+        let (lines, _) = build_preview_lines(
+            &fm,
+            "replacement",
+            MatchMode::Literal,
+            false,
+            0,
+            80,
+            0..usize::MAX,
+        );
         // first + line should carry the prefix spaces
         let plus_lines: Vec<_> = lines
             .iter()
