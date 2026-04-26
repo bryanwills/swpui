@@ -81,11 +81,21 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         }
     }
 
+    // compute how far we can scroll within the selected match
+    let selected_height = selected_range.end - selected_range.start;
+    app.preview_line_offset_max = selected_height.saturating_sub(inner_height);
+    app.preview_line_offset = app.preview_line_offset.min(app.preview_line_offset_max);
+
     // set up scroll state with counted totals so we know the visible offset
     app.preview_scroll.set_page_len(inner_height);
     app.preview_scroll
         .set_max_offset(total_lines.saturating_sub(inner_height));
     app.preview_scroll.scroll_to_range(selected_range);
+
+    // apply the extra line offset for tall matches
+    if app.preview_line_offset > 0 {
+        app.preview_scroll.scroll_down(app.preview_line_offset);
+    }
 
     let offset = app.preview_scroll.offset;
     let visible_range = offset..offset + inner_height;

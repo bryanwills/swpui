@@ -46,6 +46,10 @@ pub struct App {
     pub focused_pane: Pane,
     pub file_list: ListState,
     pub selected_match: usize,
+    /// Extra line offset within the selected match (for tall matches that exceed the viewport).
+    pub preview_line_offset: usize,
+    /// Max value for `preview_line_offset`, computed during render.
+    pub preview_line_offset_max: usize,
     pub preview_scroll: ScrollState,
     pub status_message: Option<String>,
     pub searching: bool,
@@ -79,6 +83,8 @@ impl App {
             focused_pane: Pane::default(),
             file_list: ListState::default(),
             selected_match: 0,
+            preview_line_offset: 0,
+            preview_line_offset_max: 0,
             preview_scroll: ScrollState::new(),
             status_message: None,
             searching: false,
@@ -214,6 +220,7 @@ impl App {
         self.searching = true;
         self.file_list.select(Some(0));
         self.selected_match = 0;
+        self.preview_line_offset = 0;
         self.preview_scroll.clear();
         let _ = self.cmd_tx.send(WorkerCommand::Search(SearchRequest {
             pattern: pattern.to_string(),
@@ -304,6 +311,7 @@ impl App {
                 let next = (self.selected_file() + 1).min(self.results.len() - 1);
                 self.file_list.select(Some(next));
                 self.selected_match = 0;
+                self.preview_line_offset = 0;
                 self.preview_scroll.clear();
                 return;
             }
@@ -311,6 +319,7 @@ impl App {
                 let prev = self.selected_file().saturating_sub(1);
                 self.file_list.select(Some(prev));
                 self.selected_match = 0;
+                self.preview_line_offset = 0;
                 self.preview_scroll.clear();
                 return;
             }
@@ -330,12 +339,29 @@ impl App {
                 if let Some(fm) = self.results.get(sel)
                     && !fm.matches.is_empty()
                 {
-                    self.selected_match = (self.selected_match + 1).min(fm.matches.len() - 1);
+                    if self.preview_line_offset < self.preview_line_offset_max {
+                        self.preview_line_offset += 1;
+                    } else {
+                        let new = (self.selected_match + 1).min(fm.matches.len() - 1);
+                        if new != self.selected_match {
+                            self.selected_match = new;
+                            self.preview_line_offset = 0;
+                        }
+                    }
                 }
                 return;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_match = self.selected_match.saturating_sub(1);
+                if self.preview_line_offset > 0 {
+                    self.preview_line_offset -= 1;
+                } else {
+                    let new = self.selected_match.saturating_sub(1);
+                    if new != self.selected_match {
+                        self.selected_match = new;
+                        // scroll to bottom of the previous match
+                        self.preview_line_offset = usize::MAX;
+                    }
+                }
                 return;
             }
             KeyCode::Char(' ') => {
@@ -471,6 +497,7 @@ impl App {
         if self.results.is_empty() {
             self.file_list.select(Some(0));
             self.selected_match = 0;
+            self.preview_line_offset = 0;
             self.preview_scroll.clear();
             self.focused_pane = Pane::FileList;
         } else {
@@ -478,6 +505,7 @@ impl App {
             self.file_list.select(Some(clamped));
             let match_count = self.results[clamped].matches.len();
             self.selected_match = self.selected_match.min(match_count.saturating_sub(1));
+            self.preview_line_offset = 0;
         }
     }
 }
