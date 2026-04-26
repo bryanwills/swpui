@@ -135,13 +135,13 @@ fn render_status_bar(app: &App, frame: &mut Frame, status_area: Rect, hints_area
     }
     let hints = match app.focused_pane {
         Pane::SearchInput | Pane::ReplaceInput => {
-            "ctrl-r: mode | esc: file list | tab/shift-tab: cycle | q/ctrl-c: quit"
+            "C-r/A-r: mode | esc: file list | tab/S-tab: cycle | q/C-c: quit"
         }
         Pane::FileList => {
-            "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/shift-tab: cycle | q/ctrl-c: quit"
+            "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/S-tab: cycle | q/C-c: quit"
         }
         Pane::Preview => {
-            "space: skip | enter: apply match | s: skip file | f: apply file | j/k: navigate | h/esc: back | tab/shift-tab: cycle | q/ctrl-c: quit"
+            "space: skip | enter: apply match | s: skip file | f: apply file | j/k: navigate | h/esc: back | tab/S-tab: cycle | q/C-c: quit"
         }
     };
     let hints = Line::from(hints.blue());

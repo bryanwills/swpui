@@ -261,7 +261,11 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('r')
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
                 self.match_mode = self.match_mode.toggle();
                 if !self.search_input.text().is_empty() {
                     self.dispatch_search();
