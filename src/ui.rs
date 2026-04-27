@@ -64,11 +64,16 @@ fn render_input_area(app: &mut App, frame: &mut Frame, area: Rect) {
     let [search_area, replace_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).areas(area);
 
+    let hidden_label = if app.include_hidden {
+        " [+hidden]"
+    } else {
+        " [-hidden]"
+    };
     let mode_label = match app.match_mode {
-        MatchMode::CaseAware => "Search (case-aware)".to_string(),
-        MatchMode::Literal => "Search (literal)".to_string(),
-        MatchMode::Regex => "Search (regex)".to_string(),
-        MatchMode::RegexMultiline => "Search (regex multiline)".to_string(),
+        MatchMode::CaseAware => format!("Search (case-aware){hidden_label}"),
+        MatchMode::Literal => format!("Search (literal){hidden_label}"),
+        MatchMode::Regex => format!("Search (regex){hidden_label}"),
+        MatchMode::RegexMultiline => format!("Search (regex multiline){hidden_label}"),
     };
 
     // search input
@@ -135,7 +140,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, status_area: Rect, hints_area
     }
     let hints = match app.focused_pane {
         Pane::SearchInput | Pane::ReplaceInput => {
-            "C-r/A-r: mode | esc: file list | tab/S-tab: cycle | q/C-c: quit"
+            "C-r/A-r: mode | C-d/A-d: hidden | esc: file list | tab/S-tab: cycle | q/C-c: quit"
         }
         Pane::FileList => {
             "s: skip file | f: apply file | a: apply all | j/k: navigate | l/enter: preview | tab/S-tab: cycle | q/C-c: quit"

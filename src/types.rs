@@ -103,7 +103,7 @@ pub struct SearchRequest {
 
 pub enum WorkerCommand {
     Search(SearchRequest),
-    Rebuild,
+    Rebuild { include_hidden: bool },
 }
 
 pub enum SearchResult {

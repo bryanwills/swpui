@@ -66,6 +66,7 @@ pub struct SearchWorker {
     cancelled: Arc<AtomicBool>,
     file_list: Vec<PathBuf>,
     pool: rayon::ThreadPool,
+    include_hidden: bool,
 }
 
 impl SearchWorker {
@@ -88,14 +89,20 @@ impl SearchWorker {
             cancelled,
             file_list: Vec::new(),
             pool,
+            include_hidden: true,
         })
     }
 
     pub fn run(mut self) {
         self.walk_files();
         while let Ok(mut cmd) = self.cmd_rx.recv() {
-            // skip to the latest queued command
+            // skip to the latest queued search command (makes cancelling faster)
+            // but don't ignore rebuild commands
             while let Ok(newer) = self.cmd_rx.try_recv() {
+                if let WorkerCommand::Rebuild { include_hidden } = cmd {
+                    self.include_hidden = include_hidden;
+                    self.walk_files();
+                }
                 cmd = newer;
             }
             match cmd {
@@ -103,7 +110,8 @@ impl SearchWorker {
                     self.cancelled.store(false, Ordering::Relaxed);
                     self.execute_search(&request);
                 }
-                WorkerCommand::Rebuild => {
+                WorkerCommand::Rebuild { include_hidden } => {
+                    self.include_hidden = include_hidden;
                     self.walk_files();
                 }
             }
@@ -119,7 +127,7 @@ impl SearchWorker {
             .filter_entry(|entry| {
                 !(entry.path().is_dir() && entry.path().file_name().unwrap_or_default() == ".git")
             })
-            .hidden(false)
+            .hidden(!self.include_hidden)
             .threads(threads)
             .build_parallel();
         let file_count = &AtomicUsize::new(0);

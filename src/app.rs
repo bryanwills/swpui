@@ -56,6 +56,7 @@ pub struct App {
     pub truncated: bool,
     pub spinner: SpinnerState,
     pub confirm_apply_all: bool,
+    pub include_hidden: bool,
     exit: bool,
     generation: u64,
     last_keystroke: Option<Instant>,
@@ -91,6 +92,7 @@ impl App {
             truncated: false,
             spinner: SpinnerState::default(),
             confirm_apply_all: false,
+            include_hidden: true,
             exit: false,
             generation: 0,
             last_keystroke: None,
@@ -270,6 +272,18 @@ impl App {
                 if !self.search_input.text().is_empty() {
                     self.dispatch_search();
                 }
+                return;
+            }
+            KeyCode::Char('d')
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.include_hidden = !self.include_hidden;
+                let _ = self.cmd_tx.send(WorkerCommand::Rebuild {
+                    include_hidden: self.include_hidden,
+                });
+                self.dispatch_search();
                 return;
             }
             KeyCode::Esc if self.focused_pane.is_input() && !self.searching => {

@@ -44,12 +44,13 @@ $ swp
 
 #### Global
 
-| Key                | Action           |
-| ------------------ | ---------------- |
-| `Tab`              | Next pane        |
-| `Shift+Tab`        | Previous pane    |
-| `Ctrl+r` / `Alt+r` | Cycle match mode |
-| `Ctrl+c`           | Quit             |
+| Key                | Action              |
+| ------------------ | ------------------- |
+| `Tab`              | Next pane           |
+| `Shift+Tab`        | Previous pane       |
+| `Ctrl+r` / `Alt+r` | Cycle match mode    |
+| `Ctrl+d` / `Alt+d` | Toggle hidden files |
+| `Ctrl+c`           | Quit                |
 
 #### File List
 
@@ -90,7 +91,7 @@ $ swp
 - [x] Respects (git)ignore files
 - [x] Batch actions
 - [x] Capture groups replacement
-- [ ] Toggle for hidden files
+- [x] Toggle hidden files
 - [ ] Focus pane with mouse
 - [ ] Glob to include/exclude files
 
