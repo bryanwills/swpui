@@ -1,0 +1,4 @@
+[workspace]
+changelog_config = "cliff.toml"
+dependencies_update = true
+git_release_enable = false      # cargo-dist does that

@@ -1,10 +1,14 @@
 [package]
 authors = ["Valentin Bersier <hi@beeb.li>"]
+categories = ["development-tools", "command-line-utilities"]
+description = "TUI utility to search and replace text, with a focus on ergonomics, speed and case-awareness in source code"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 name = "swpui"
+readme = "./README.md"
 repository = "https://github.com/beeb/swpui"
 rust-version = "1.94.0"
-version = "0.1.0"
+version = "0.0.0"
 
 [[bin]]
 name = "swp"
@@ -37,3 +41,7 @@ unicode-width = "0.2"
 
 [profile.release]
 lto = "thin"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
