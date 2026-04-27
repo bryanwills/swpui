@@ -65,10 +65,11 @@ pub fn apply_replacements(
     active.sort_unstable_by_key(|m| Reverse(m.byte_offset_start));
 
     for m in active {
+        let expanded = expand_captures(replacement, &m.captures);
         let repl = if mode == MatchMode::CaseAware {
-            case_aware_replacement(&m.matched_text(), replacement)
+            case_aware_replacement(&m.matched_text(), &expanded)
         } else {
-            Cow::Borrowed(replacement)
+            expanded
         };
         result.replace_range(m.byte_offset_start..m.byte_offset_end, &repl);
     }
@@ -104,6 +105,40 @@ pub fn effective_replacement(raw: &str, mode: MatchMode) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(raw)
     }
+}
+
+/// Expand capture group references (`$0`-`$9`) in a replacement template.
+///
+/// `$$` produces a literal `$`. References to non-participating groups produce an empty string.
+/// Returns a borrowed slice when no `$` is present.
+#[must_use]
+pub fn expand_captures<'a>(template: &'a str, captures: &[Box<str>]) -> Cow<'a, str> {
+    if !template.contains('$') || captures.is_empty() {
+        return Cow::Borrowed(template);
+    }
+    let mut result = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            match chars.peek() {
+                Some('$') => {
+                    chars.next();
+                    result.push('$');
+                }
+                Some(&d) if d.is_ascii_digit() => {
+                    chars.next();
+                    let idx = (d as u8 - b'0') as usize;
+                    if let Some(cap) = captures.get(idx) {
+                        result.push_str(cap);
+                    }
+                }
+                _ => result.push('$'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    Cow::Owned(result)
 }
 
 /// Expand escape sequences in a string (`\n`, `\r`, `\t`, `\\`).
@@ -156,6 +191,7 @@ mod tests {
                 line_number: 1,
                 line_content: Box::from(""),
             },
+            captures: Box::new([]),
         }
     }
 
@@ -421,5 +457,67 @@ mod tests {
             expand_escape_sequences(r"line1\nline2\ttabbed"),
             Cow::Owned::<str>("line1\nline2\ttabbed".to_string())
         );
+    }
+
+    #[test]
+    fn captures_no_dollar_borrows() {
+        let caps: Box<[Box<str>]> = vec![Box::from("full")].into();
+        assert!(matches!(
+            expand_captures("no refs", &caps),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn captures_empty_captures_borrows() {
+        assert!(matches!(expand_captures("$1 ref", &[]), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn captures_expand_group() {
+        let caps: Box<[Box<str>]> =
+            vec![Box::from("foo bar"), Box::from("foo"), Box::from("bar")].into();
+        assert_eq!(expand_captures("$2-$1", &caps).as_ref(), "bar-foo");
+    }
+
+    #[test]
+    fn captures_expand_full_match() {
+        let caps: Box<[Box<str>]> = vec![Box::from("hello")].into();
+        assert_eq!(expand_captures("[$0]", &caps).as_ref(), "[hello]");
+    }
+
+    #[test]
+    fn captures_dollar_escape() {
+        let caps: Box<[Box<str>]> = vec![Box::from("x")].into();
+        assert_eq!(expand_captures("$$0", &caps).as_ref(), "$0");
+    }
+
+    #[test]
+    fn captures_missing_group() {
+        let caps: Box<[Box<str>]> = vec![Box::from("x")].into();
+        assert_eq!(expand_captures("$1$9", &caps).as_ref(), "");
+    }
+
+    #[test]
+    fn captures_trailing_dollar() {
+        let caps: Box<[Box<str>]> = vec![Box::from("x")].into();
+        assert_eq!(expand_captures("end$", &caps).as_ref(), "end$");
+    }
+
+    #[test]
+    fn captures_apply_replacements_regex() {
+        let content = "foo bar";
+        let matches = vec![MatchInfo {
+            kind: MatchKind::SingleLine {
+                line_number: 1,
+                line_content: "foo bar".into(),
+            },
+            match_col_start: 0,
+            match_col_end: 7,
+            captures: vec![Box::from("foo bar"), Box::from("foo"), Box::from("bar")].into(),
+            ..make_match(0, 7)
+        }];
+        let result = apply_replacements(content, &matches, "$2 $1", MatchMode::Regex);
+        assert_eq!(result, "bar foo");
     }
 }

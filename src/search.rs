@@ -255,18 +255,18 @@ pub fn find_matches_in_content(
     }
     let num_lines = line_starts.len();
 
-    let byte_ranges = find_byte_ranges(content, pattern);
+    let raw_matches = find_byte_ranges(content, pattern);
 
     let mut matches = Vec::new();
     let mut line_idx = 0;
-    for (byte_start, byte_end) in byte_ranges {
+    for raw in raw_matches {
         if match_count.load(Ordering::Relaxed) >= max_matches {
             break;
         }
 
         while line_starts
             .get(line_idx + 1)
-            .is_some_and(|&offset| offset <= byte_start)
+            .is_some_and(|&offset| offset <= raw.start)
         {
             line_idx += 1;
         }
@@ -275,9 +275,10 @@ pub fn find_matches_in_content(
             content,
             &line_starts,
             num_lines,
-            byte_start,
-            byte_end,
+            raw.start,
+            raw.end,
             line_idx,
+            raw.captures,
         ));
         match_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -285,15 +286,47 @@ pub fn find_matches_in_content(
     Ok(matches)
 }
 
-fn find_byte_ranges(content: &str, pattern: &Pattern) -> Vec<(usize, usize)> {
+/// A match's byte range plus any captured groups (empty for non-regex patterns).
+struct RawMatch {
+    start: usize,
+    end: usize,
+    captures: Box<[Box<str>]>,
+}
+
+fn find_byte_ranges(content: &str, pattern: &Pattern) -> Vec<RawMatch> {
     match pattern {
         Pattern::Empty => Vec::new(),
         Pattern::Literal(pattern) => memchr::memmem::find_iter(content.as_bytes(), pattern)
-            .map(|pos| (pos, pos + pattern.len()))
+            .map(|pos| RawMatch {
+                start: pos,
+                end: pos + pattern.len(),
+                captures: Box::new([]),
+            })
+            .collect(),
+        Pattern::Regex(re) if re.captures_len() > 1 => re
+            .captures_iter(content)
+            .filter_map(|caps| {
+                let full = caps.get(0)?;
+                let groups: Box<[Box<str>]> = (0..caps.len())
+                    .map(|i| {
+                        caps.get(i)
+                            .map_or_else(|| Box::from(""), |m| Box::from(m.as_str()))
+                    })
+                    .collect();
+                Some(RawMatch {
+                    start: full.start(),
+                    end: full.end(),
+                    captures: groups,
+                })
+            })
             .collect(),
         Pattern::Regex(re) => re
             .find_iter(content)
-            .map(|m| (m.start(), m.end()))
+            .map(|m| RawMatch {
+                start: m.start(),
+                end: m.end(),
+                captures: Box::new([]),
+            })
             .collect(),
     }
 }
@@ -365,6 +398,7 @@ fn build_match_info(
     byte_start: usize,
     byte_end: usize,
     line_idx: usize,
+    captures: Box<[Box<str>]>,
 ) -> MatchInfo {
     let get_line = |idx: usize| -> &str {
         let start = line_starts[idx];
@@ -443,6 +477,7 @@ fn build_match_info(
         context_after,
         skip: false,
         kind,
+        captures,
     }
 }
 

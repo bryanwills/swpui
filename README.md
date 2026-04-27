@@ -51,7 +51,7 @@ TODO
 - [x] Multithreaded search
 - [x] Respects (git)ignore files
 - [x] Batch actions
-- [ ] Capture groups in replace
+- [x] Capture groups replacement
 - [ ] Toggle for hidden files
 - [ ] Focus pane with mouse
 - [ ] Glob to include/exclude files

@@ -50,6 +50,9 @@ pub struct MatchInfo {
     pub context_after: Box<[ContextLine]>,
     pub skip: bool,
     pub kind: MatchKind,
+    /// Captured groups from regex matches. Index 0 = full match ($0), 1..=9 = groups.
+    /// Empty in non-regex modes.
+    pub captures: Box<[Box<str>]>,
 }
 
 impl MatchInfo {
@@ -199,6 +202,7 @@ mod tests {
                 line_number: 1,
                 line_content: "hello world".into(),
             },
+            captures: Box::new([]),
         };
         assert!(!m.skip);
     }
@@ -220,6 +224,7 @@ mod tests {
                         line_number: 1,
                         line_content: "foo bar".into(),
                     },
+                    captures: Box::new([]),
                 },
                 MatchInfo {
                     byte_offset_start: 10,
@@ -233,6 +238,7 @@ mod tests {
                         line_number: 2,
                         line_content: "baz foo qux".into(),
                     },
+                    captures: Box::new([]),
                 },
             ],
             content_hash: [0; 32],
@@ -277,6 +283,7 @@ mod tests {
                 line_number: 1,
                 line_content: "hello world".into(),
             },
+            captures: Box::new([]),
         };
         assert!(!m.skip);
         assert_eq!(&*m.matched_text(), "hello");
@@ -298,6 +305,7 @@ mod tests {
                 line_number_end: 2,
                 matched_lines: vec![Box::from("hello"), Box::from("world")].into(),
             },
+            captures: Box::new([]),
         };
         assert!(matches!(m.kind, MatchKind::MultiLine { .. }));
         if let MatchKind::MultiLine {

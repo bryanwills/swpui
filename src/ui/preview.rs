@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Range};
+use std::ops::Range;
 
 use rat_widget::scrolled::{Scroll, ScrollArea, ScrollAreaState};
 use ratatui::{
@@ -13,7 +13,7 @@ use ratatui::{
 use super::focused_border_style;
 use crate::{
     app::App,
-    replace::{case_aware_replacement, effective_replacement},
+    replace::{case_aware_replacement, effective_replacement, expand_captures},
     search::CONTEXT_LINES,
     types::{FileMatches, MatchInfo, MatchKind, MatchMode, Pane},
     utils::truncate_match_line,
@@ -357,10 +357,11 @@ fn build_preview_lines(
             lines.extend(build_context_lines(&m.context_before));
 
             let matched_text = m.matched_text();
+            let expanded = expand_captures(replacement, &m.captures);
             let effective_replacement = if mode == MatchMode::CaseAware {
-                case_aware_replacement(&matched_text, replacement)
+                case_aware_replacement(&matched_text, &expanded)
             } else {
-                Cow::Borrowed(replacement)
+                expanded
             };
             match &m.kind {
                 MatchKind::SingleLine { .. } => {
@@ -413,6 +414,7 @@ mod tests {
                 line_number_end: boxed_lines.len(),
                 matched_lines: boxed_lines,
             },
+            captures: Box::new([]),
         }
     }
 
@@ -429,6 +431,7 @@ mod tests {
                 line_number: 1,
                 line_content: Box::from(line_content),
             },
+            captures: Box::new([]),
         }
     }
 
