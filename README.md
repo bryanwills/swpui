@@ -34,6 +34,10 @@ cargo install swpui
 cargo binstall swpui
 ```
 
+#### Pre-built binaries and install script
+
+Head over to the [releases page](https://github.com/beeb/swpui/releases)!
+
 ## Usage
 
 ### Launch the TUI
