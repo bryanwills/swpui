@@ -40,9 +40,47 @@ cargo binstall swpui
 $ swp
 ```
 
-### Keybinds
+### Keybindings
 
-TODO
+#### Global
+
+| Key                | Action           |
+| ------------------ | ---------------- |
+| `Tab`              | Next pane        |
+| `Shift+Tab`        | Previous pane    |
+| `Ctrl+r` / `Alt+r` | Cycle match mode |
+| `Ctrl+c`           | Quit             |
+
+#### File List
+
+| Key                     | Action                            |
+| ----------------------- | --------------------------------- |
+| `j` / `Down`            | Next file                         |
+| `k` / `Up`              | Previous file                     |
+| `l` / `Enter` / `Right` | Focus preview pane                |
+| `s`                     | Skip all matches in file (toggle) |
+| `f`                     | Apply replacement to file         |
+| `a`                     | Apply replacement to all files    |
+| `q`                     | Quit                              |
+
+#### Preview
+
+| Key                  | Action                               |
+| -------------------- | ------------------------------------ |
+| `j` / `Down`         | Next match                           |
+| `k` / `Up`           | Previous match                       |
+| `Space`              | Skip selected match (toggle)         |
+| `Enter`              | Apply replacement for selected match |
+| `h` / `Esc` / `Left` | Back to file list                    |
+| `s`                  | Skip all matches in file (toggle)    |
+| `f`                  | Apply replacement to file            |
+| `q`                  | Quit                                 |
+
+#### Input Panes
+
+| Key   | Action          |
+| ----- | --------------- |
+| `Esc` | Focus file list |
 
 ## Features
 
