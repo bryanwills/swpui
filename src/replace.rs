@@ -67,7 +67,8 @@ pub fn apply_replacements(
     for m in active {
         let expanded = expand_captures(replacement, &m.captures);
         let repl = if mode == MatchMode::CaseAware {
-            case_aware_replacement(&m.matched_text(), &expanded)
+            let matched_text = &result[m.byte_offset_start..m.byte_offset_end];
+            case_aware_replacement(matched_text, &expanded)
         } else {
             expanded
         };
@@ -174,23 +175,13 @@ pub fn expand_escape_sequences(s: &str) -> Cow<'_, str> {
 mod tests {
     use std::fs;
 
-    use crate::types::MatchKind;
-
     use super::*;
 
     fn make_match(start: usize, end: usize) -> MatchInfo {
         MatchInfo {
             byte_offset_start: start,
             byte_offset_end: end,
-            match_col_start: 0,
-            match_col_end: 0,
-            context_before: Box::new([]),
-            context_after: Box::new([]),
             skip: false,
-            kind: MatchKind::SingleLine {
-                line_number: 1,
-                line_content: Box::from(""),
-            },
             captures: Box::new([]),
         }
     }
@@ -373,26 +364,7 @@ mod tests {
     #[test]
     fn case_aware_apply_replacements() {
         let content = "Hello hello";
-        let matches = vec![
-            MatchInfo {
-                kind: MatchKind::SingleLine {
-                    line_number: 1,
-                    line_content: "Hello hello".into(),
-                },
-                match_col_start: 0,
-                match_col_end: 5,
-                ..make_match(0, 5)
-            },
-            MatchInfo {
-                kind: MatchKind::SingleLine {
-                    line_number: 1,
-                    line_content: "Hello hello".into(),
-                },
-                match_col_start: 6,
-                match_col_end: 11,
-                ..make_match(6, 11)
-            },
-        ];
+        let matches = vec![make_match(0, 5), make_match(6, 11)];
         let result = apply_replacements(content, &matches, "world", MatchMode::CaseAware);
         assert_eq!(result, "World world");
     }
@@ -508,12 +480,6 @@ mod tests {
     fn captures_apply_replacements_regex() {
         let content = "foo bar";
         let matches = vec![MatchInfo {
-            kind: MatchKind::SingleLine {
-                line_number: 1,
-                line_content: "foo bar".into(),
-            },
-            match_col_start: 0,
-            match_col_end: 7,
             captures: vec![Box::from("foo bar"), Box::from("foo"), Box::from("bar")].into(),
             ..make_match(0, 7)
         }];

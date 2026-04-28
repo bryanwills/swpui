@@ -1,0 +1,506 @@
+use std::{
+    fs,
+    io::{self, Read as _},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, RwLock, atomic::AtomicUsize, mpsc},
+};
+
+use sha2::{Digest as _, Sha256};
+
+use crate::{
+    prelude::OrPanic as _,
+    preview::{
+        cache::PreviewCache,
+        data::{PreviewData, build_preview_data},
+    },
+    search::{MAX_MATCHES, Pattern, find_matches_in_content},
+    types::{MatchInfo, MatchMode},
+};
+
+const NUM_WORKERS: usize = 3;
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+pub type WantedSet = Arc<RwLock<[Option<PathBuf>; 3]>>;
+
+#[derive(Debug, Clone)]
+pub struct PreviewRequest {
+    pub path: PathBuf,
+    pub byte_ranges: Box<[(usize, usize)]>,
+    pub content_hash: [u8; 32],
+    pub pattern: String,
+    pub mode: MatchMode,
+    pub generation: u64,
+}
+
+#[derive(Debug)]
+pub enum PreviewCommand {
+    Request(PreviewRequest),
+    Invalidate(PathBuf),
+    Clear,
+}
+
+#[derive(Debug)]
+pub enum PreviewResult {
+    Ready {
+        path: PathBuf,
+        generation: u64,
+        data: Arc<PreviewData>,
+    },
+    Updated {
+        path: PathBuf,
+        generation: u64,
+        matches: Vec<MatchInfo>,
+        content_hash: [u8; 32],
+        data: Arc<PreviewData>,
+    },
+    Removed {
+        path: PathBuf,
+        generation: u64,
+    },
+    Error {
+        path: PathBuf,
+        generation: u64,
+        message: String,
+    },
+}
+
+pub struct PreviewWorker {
+    cmd_rx: Arc<Mutex<mpsc::Receiver<PreviewCommand>>>,
+    result_tx: mpsc::Sender<PreviewResult>,
+    cache: Arc<Mutex<PreviewCache>>,
+    wanted: WantedSet,
+}
+
+impl PreviewWorker {
+    #[must_use]
+    pub fn new(
+        cmd_rx: mpsc::Receiver<PreviewCommand>,
+        result_tx: mpsc::Sender<PreviewResult>,
+        wanted: WantedSet,
+    ) -> Self {
+        Self {
+            cmd_rx: Arc::new(Mutex::new(cmd_rx)),
+            result_tx,
+            cache: Arc::new(Mutex::new(PreviewCache::new())),
+            wanted,
+        }
+    }
+
+    pub fn run(self) {
+        let handles = (0..NUM_WORKERS)
+            .map(|_| {
+                let cmd_rx = Arc::clone(&self.cmd_rx);
+                let result_tx = self.result_tx.clone();
+                let cache = Arc::clone(&self.cache);
+                let wanted = Arc::clone(&self.wanted);
+                std::thread::spawn(move || {
+                    worker_loop(&cmd_rx, &result_tx, &cache, &wanted);
+                })
+            })
+            .collect::<Vec<_>>();
+        for h in handles {
+            let _ = h.join();
+        }
+    }
+}
+
+fn worker_loop(
+    cmd_rx: &Mutex<mpsc::Receiver<PreviewCommand>>,
+    result_tx: &mpsc::Sender<PreviewResult>,
+    cache: &Mutex<PreviewCache>,
+    wanted: &WantedSet,
+) {
+    loop {
+        let cmd = {
+            let rx = cmd_rx.lock().or_panic("poisoned lock");
+            let Ok(c) = rx.recv() else { return };
+            c
+        };
+        match cmd {
+            PreviewCommand::Clear => {
+                let mut cache = cache.lock().or_panic("poisoned lock");
+                cache.clear();
+            }
+            PreviewCommand::Invalidate(path) => {
+                let mut cache = cache.lock().or_panic("poisoned lock");
+                cache.invalidate(&path);
+            }
+            PreviewCommand::Request(req) => {
+                handle_request(req, result_tx, cache, wanted);
+            }
+        }
+    }
+}
+
+fn handle_request(
+    req: PreviewRequest,
+    result_tx: &mpsc::Sender<PreviewResult>,
+    cache: &Mutex<PreviewCache>,
+    wanted: &WantedSet,
+) {
+    if !path_is_wanted(wanted, &req.path) {
+        return;
+    }
+
+    // read the file first so we can use the actual on-disk hash as the cache key;
+    // using req.content_hash for the lookup would cause stale hits when the file
+    // changes externally after the preview was cached
+    let (content, content_hash) = match read_file_with_cancel(&req.path, wanted) {
+        Ok(Some(pair)) => pair,
+        Ok(None) => return, // this file is not in the wanted set anymore
+        Err(e) => {
+            let _ = result_tx.send(PreviewResult::Error {
+                path: req.path,
+                generation: req.generation,
+                message: e.to_string(),
+            });
+            return;
+        }
+    };
+
+    let maybe_data = {
+        let mut cache = cache.lock().or_panic("poisoned lock");
+        cache.get(&req.path, &content_hash)
+    };
+    if let Some(data) = maybe_data {
+        let _ = result_tx.send(PreviewResult::Ready {
+            path: req.path,
+            generation: req.generation,
+            data,
+        });
+        return;
+    }
+
+    if content_hash == req.content_hash {
+        // file hasn't changed since the search ran, construct preview data
+        let data = Arc::new(build_preview_data(&content, &req.byte_ranges));
+        {
+            let mut cache = cache.lock().or_panic("poisoned lock");
+            cache.insert(req.path.clone(), content_hash, Arc::clone(&data));
+        }
+        let _ = result_tx.send(PreviewResult::Ready {
+            path: req.path,
+            generation: req.generation,
+            data,
+        });
+    } else {
+        // file has changed, let's refresh the search results for it before building the preview data
+        let pattern = match Pattern::new(&req.pattern, req.mode) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = result_tx.send(PreviewResult::Error {
+                    path: req.path,
+                    generation: req.generation,
+                    message: e.to_string(),
+                });
+                return;
+            }
+        };
+        let counter = AtomicUsize::new(0);
+        let new_matches = match find_matches_in_content(&content, &pattern, &counter, MAX_MATCHES) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = result_tx.send(PreviewResult::Error {
+                    path: req.path,
+                    generation: req.generation,
+                    message: e.to_string(),
+                });
+                return;
+            }
+        };
+        if new_matches.is_empty() {
+            // file is not interesting anymore, no matches
+            let _ = result_tx.send(PreviewResult::Removed {
+                path: req.path,
+                generation: req.generation,
+            });
+            return;
+        }
+        let byte_ranges: Vec<(usize, usize)> = new_matches
+            .iter()
+            .map(|m| (m.byte_offset_start, m.byte_offset_end))
+            .collect();
+        let data = Arc::new(build_preview_data(&content, &byte_ranges));
+        {
+            let mut cache = cache.lock().or_panic("poisoned lock");
+            cache.insert(req.path.clone(), content_hash, Arc::clone(&data));
+        }
+        let _ = result_tx.send(PreviewResult::Updated {
+            path: req.path,
+            generation: req.generation,
+            matches: new_matches,
+            content_hash,
+            data,
+        });
+    }
+}
+
+fn read_file_with_cancel(
+    path: &Path,
+    wanted: &WantedSet,
+) -> io::Result<Option<(String, [u8; 32])>> {
+    let file = fs::File::open(path)?;
+    let mut reader = io::BufReader::new(file);
+    let mut buf = vec![0u8; READ_CHUNK_BYTES];
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hasher = Sha256::new();
+    loop {
+        if !path_is_wanted(wanted, path) {
+            return Ok(None);
+        }
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        bytes.extend_from_slice(&buf[..n]);
+    }
+    let hash: [u8; 32] = hasher.finalize().into();
+    let content =
+        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(Some((content, hash)))
+}
+
+fn path_is_wanted(wanted: &WantedSet, path: &Path) -> bool {
+    let slots = wanted.read().or_panic("poisoned lock");
+    slots.iter().any(|p| p.as_deref() == Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{io::Write as _, sync::mpsc, time::Duration};
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::utils::hash_file;
+
+    fn setup() -> (
+        mpsc::Sender<PreviewCommand>,
+        mpsc::Receiver<PreviewResult>,
+        WantedSet,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let wanted: WantedSet = Arc::new(RwLock::new([None, None, None]));
+        let worker = PreviewWorker::new(cmd_rx, result_tx, Arc::clone(&wanted));
+        let handle = std::thread::spawn(move || worker.run());
+        (cmd_tx, result_rx, wanted, handle)
+    }
+
+    fn write_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        let mut f = fs::File::create(&path).unwrap_or_else(|_| unreachable!());
+        f.write_all(content.as_bytes())
+            .unwrap_or_else(|_| unreachable!());
+        path
+    }
+
+    #[test]
+    fn ready_when_hash_matches() {
+        let dir = TempDir::new().unwrap_or_else(|_| unreachable!());
+        let path = write_file(&dir, "a.txt", "hello world\n");
+        let hash = hash_file(&path).unwrap_or_else(|_| unreachable!());
+
+        let (cmd_tx, result_rx, wanted, _handle) = setup();
+        if let Ok(mut slots) = wanted.write() {
+            slots[0] = Some(path.clone());
+        }
+
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![(0, 5)].into(),
+                content_hash: hash,
+                pattern: "hello".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        let PreviewResult::Ready {
+            path: p,
+            generation,
+            data,
+        } = result
+        else {
+            panic!("expected Ready, got {result:?}");
+        };
+        assert_eq!(p, path);
+        assert_eq!(generation, 1);
+        assert_eq!(data.matches.len(), 1);
+    }
+
+    #[test]
+    fn drops_request_when_path_not_wanted() {
+        let dir = TempDir::new().unwrap_or_else(|_| unreachable!());
+        let path = write_file(&dir, "a.txt", "hello\n");
+        let hash = hash_file(&path).unwrap_or_else(|_| unreachable!());
+
+        let (cmd_tx, result_rx, _wanted, _handle) = setup();
+
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![(0, 5)].into(),
+                content_hash: hash,
+                pattern: "hello".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+
+        let result = result_rx.recv_timeout(Duration::from_millis(200));
+        assert!(result.is_err(), "expected no result, got {result:?}");
+    }
+
+    #[test]
+    fn updated_when_hash_mismatches_and_matches_found() {
+        let dir = TempDir::new().unwrap_or_else(|_| unreachable!());
+        let path = write_file(&dir, "a.txt", "foo bar foo\n");
+        let stale_hash = [0xABu8; 32];
+
+        let (cmd_tx, result_rx, wanted, _handle) = setup();
+        if let Ok(mut slots) = wanted.write() {
+            slots[0] = Some(path.clone());
+        }
+
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![(0, 3)].into(),
+                content_hash: stale_hash,
+                pattern: "foo".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        let PreviewResult::Updated {
+            matches,
+            content_hash,
+            data,
+            ..
+        } = result
+        else {
+            panic!("expected Updated, got {result:?}");
+        };
+        assert_eq!(matches.len(), 2);
+        assert_ne!(content_hash, stale_hash);
+        assert_eq!(data.matches.len(), 2);
+    }
+
+    #[test]
+    fn removed_when_research_yields_zero_matches() {
+        let dir = TempDir::new().unwrap_or_else(|_| unreachable!());
+        let path = write_file(&dir, "a.txt", "no matches here\n");
+        let stale_hash = [0xABu8; 32];
+
+        let (cmd_tx, result_rx, wanted, _handle) = setup();
+        if let Ok(mut slots) = wanted.write() {
+            slots[0] = Some(path.clone());
+        }
+
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![].into(),
+                content_hash: stale_hash,
+                pattern: "needle".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        assert!(matches!(result, PreviewResult::Removed { .. }));
+    }
+
+    #[test]
+    fn error_when_file_missing() {
+        let (cmd_tx, result_rx, wanted, _handle) = setup();
+        let path = PathBuf::from("/nonexistent/path/zzz.txt");
+        if let Ok(mut slots) = wanted.write() {
+            slots[0] = Some(path.clone());
+        }
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![(0, 5)].into(),
+                content_hash: [0u8; 32],
+                pattern: "x".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        assert!(matches!(result, PreviewResult::Error { .. }));
+    }
+
+    #[test]
+    fn updated_when_file_changed_after_cache_populated() {
+        // reproduce the bug: file previewed (cache populated with H1), then modified
+        // externally (now H2), then previewed again with req.content_hash=H1
+        // must return Updated, not the stale cached Ready
+        let dir = TempDir::new().unwrap_or_else(|_| unreachable!());
+        let path = write_file(&dir, "a.txt", "foo\n");
+        let original_hash = hash_file(&path).unwrap_or_else(|_| unreachable!());
+
+        let (cmd_tx, result_rx, wanted, _handle) = setup();
+        if let Ok(mut slots) = wanted.write() {
+            slots[0] = Some(path.clone());
+        }
+
+        // first request: populates cache under original_hash
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![(0, 3)].into(),
+                content_hash: original_hash,
+                pattern: "foo".to_string(),
+                mode: MatchMode::Literal,
+                generation: 1,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+        let r1 = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        assert!(
+            matches!(r1, PreviewResult::Ready { .. }),
+            "expected Ready, got {r1:?}"
+        );
+
+        // modify the file externally
+        write_file(&dir, "a.txt", "foo bar\n");
+
+        // second request: still uses original_hash (FileMatches not updated yet)
+        cmd_tx
+            .send(PreviewCommand::Request(PreviewRequest {
+                path: path.clone(),
+                byte_ranges: vec![(0, 3)].into(),
+                content_hash: original_hash,
+                pattern: "foo".to_string(),
+                mode: MatchMode::Literal,
+                generation: 2,
+            }))
+            .unwrap_or_else(|_| unreachable!());
+        let r2 = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| unreachable!());
+        assert!(
+            matches!(r2, PreviewResult::Updated { .. }),
+            "expected Updated (file changed externally), got {r2:?}"
+        );
+    }
+}
