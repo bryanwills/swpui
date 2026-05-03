@@ -1,7 +1,3 @@
-use std::path::PathBuf;
-
-use crate::path::ResponsivePath;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MatchMode {
     #[default]
@@ -34,49 +30,16 @@ pub struct MatchInfo {
     pub captures: Box<[Box<str>]>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FileMatches {
-    pub path: PathBuf,
-    pub responsive_path: Option<ResponsivePath>,
-    pub matches: Vec<MatchInfo>,
-    pub content_hash: [u8; 32],
-}
-
-impl FileMatches {
+impl MatchInfo {
     #[must_use]
-    pub fn active_match_count(&self) -> usize {
-        self.matches.iter().filter(|m| !m.skip).count()
+    pub fn new(byte_start: usize, byte_end: usize, captures: Box<[Box<str>]>) -> Self {
+        Self {
+            byte_offset_start: byte_start,
+            byte_offset_end: byte_end,
+            skip: false,
+            captures,
+        }
     }
-}
-
-pub struct SearchRequest {
-    pub pattern: String,
-    pub mode: MatchMode,
-    pub generation: u64,
-}
-
-pub enum WorkerCommand {
-    Search(SearchRequest),
-    Rebuild { include_hidden: bool },
-}
-
-pub enum SearchResult {
-    FileListReady {
-        count: usize,
-        truncated: bool,
-    },
-    FileMatches {
-        generation: u64,
-        file_matches: FileMatches,
-    },
-    Complete {
-        generation: u64,
-        truncated: bool,
-    },
-    Error {
-        generation: u64,
-        message: String,
-    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -130,31 +93,6 @@ mod tests {
         assert_eq!(mode, MatchMode::RegexMultiline);
         mode = mode.toggle();
         assert_eq!(mode, MatchMode::CaseAware);
-    }
-
-    #[test]
-    fn file_matches_match_count() {
-        let fm = FileMatches {
-            path: PathBuf::from("test.rs"),
-            responsive_path: None,
-            matches: vec![
-                MatchInfo {
-                    byte_offset_start: 0,
-                    byte_offset_end: 3,
-                    skip: false,
-                    captures: Box::new([]),
-                },
-                MatchInfo {
-                    byte_offset_start: 10,
-                    byte_offset_end: 13,
-                    skip: true,
-                    captures: Box::new([]),
-                },
-            ],
-            content_hash: [0; 32],
-        };
-        assert_eq!(fm.matches.len(), 2);
-        assert_eq!(fm.active_match_count(), 1);
     }
 
     #[test]

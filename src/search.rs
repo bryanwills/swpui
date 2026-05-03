@@ -18,9 +18,61 @@ use regex::Regex;
 use tracing::debug;
 
 use crate::{
-    types::{FileMatches, MatchInfo, MatchMode, SearchRequest, SearchResult, WorkerCommand},
-    utils::hash_content,
+    hash::FileHash,
+    path::ResponsivePath,
+    types::{MatchInfo, MatchMode},
 };
+
+pub struct SearchRequest {
+    pub pattern: String,
+    pub mode: MatchMode,
+    pub generation: u64,
+}
+
+pub enum WorkerCommand {
+    Search(SearchRequest),
+    Rebuild { include_hidden: bool },
+}
+
+impl From<SearchRequest> for WorkerCommand {
+    fn from(value: SearchRequest) -> Self {
+        WorkerCommand::Search(value)
+    }
+}
+
+pub enum SearchResult {
+    FileListReady {
+        count: usize,
+        truncated: bool,
+    },
+    FileMatches {
+        generation: u64,
+        file_matches: FileMatches,
+    },
+    Complete {
+        generation: u64,
+        truncated: bool,
+    },
+    Error {
+        generation: u64,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FileMatches {
+    pub path: PathBuf,
+    pub responsive_path: Option<ResponsivePath>,
+    pub matches: Vec<MatchInfo>,
+    pub hash: FileHash,
+}
+
+impl FileMatches {
+    #[must_use]
+    pub fn active_match_count(&self) -> usize {
+        self.matches.iter().filter(|m| !m.skip).count()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum Pattern<'a> {
@@ -202,14 +254,14 @@ impl SearchWorker {
                 };
 
                 if !matches.is_empty() {
-                    let content_hash = hash_content(&mut content.as_bytes());
+                    let content_hash = FileHash::from_bytes(content.as_bytes());
                     let _ = result_tx.send(SearchResult::FileMatches {
                         generation: request.generation,
                         file_matches: FileMatches {
                             path: path.clone(),
                             responsive_path: None,
                             matches,
-                            content_hash,
+                            hash: content_hash,
                         },
                     });
                 }
@@ -258,7 +310,7 @@ pub fn find_matches_in_content(
         if match_count.load(Ordering::Relaxed) >= max_matches {
             break;
         }
-        matches.push(build_match_info(raw.start, raw.end, raw.captures));
+        matches.push(MatchInfo::new(raw.start, raw.end, raw.captures));
         match_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -310,15 +362,6 @@ fn find_byte_ranges(content: &str, pattern: &Pattern) -> Vec<RawMatch> {
     }
 }
 
-fn build_match_info(byte_start: usize, byte_end: usize, captures: Box<[Box<str>]>) -> MatchInfo {
-    MatchInfo {
-        byte_offset_start: byte_start,
-        byte_offset_end: byte_end,
-        skip: false,
-        captures,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +379,31 @@ mod tests {
             f.write_all(content.as_bytes()).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn file_matches_match_count() {
+        let fm = FileMatches {
+            path: PathBuf::from("test.rs"),
+            responsive_path: None,
+            matches: vec![
+                MatchInfo {
+                    byte_offset_start: 0,
+                    byte_offset_end: 3,
+                    skip: false,
+                    captures: Box::new([]),
+                },
+                MatchInfo {
+                    byte_offset_start: 10,
+                    byte_offset_end: 13,
+                    skip: true,
+                    captures: Box::new([]),
+                },
+            ],
+            hash: FileHash::default(),
+        };
+        assert_eq!(fm.matches.len(), 2);
+        assert_eq!(fm.active_match_count(), 1);
     }
 
     #[test]
